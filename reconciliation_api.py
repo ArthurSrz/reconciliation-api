@@ -51,7 +51,7 @@ neo4j_driver = None
 def get_neo4j_driver():
     """Get or create Neo4j driver instance"""
     global neo4j_driver
-    if neo4j_driver is None:
+    if neo4j_driver is None and NEO4J_URI and NEO4J_URI != 'bolt://localhost:7687':
         neo4j_driver = GraphDatabase.driver(
             NEO4J_URI,
             auth=(NEO4J_USER, NEO4J_PASSWORD)
@@ -81,6 +81,10 @@ def health_check():
 def check_neo4j_connection():
     """Check Neo4j connection status"""
     try:
+        # Skip connection check if no credentials provided
+        if not NEO4J_URI or NEO4J_URI == 'bolt://localhost:7687':
+            return "not_configured"
+
         driver = get_neo4j_driver()
         with driver.session() as session:
             result = session.run("RETURN 1")
@@ -110,8 +114,27 @@ def get_graph_nodes():
     limit = min(int(request.args.get('limit', 300)), 1000)
     centrality_type = request.args.get('centrality_type', 'degree')
 
+    # Check if Neo4j is configured
+    if not NEO4J_URI or NEO4J_URI == 'bolt://localhost:7687':
+        return jsonify({
+            'success': False,
+            'error': 'Neo4j not configured',
+            'nodes': [],
+            'count': 0,
+            'limit': limit
+        })
+
     try:
         driver = get_neo4j_driver()
+        if not driver:
+            return jsonify({
+                'success': False,
+                'error': 'Neo4j driver not available',
+                'nodes': [],
+                'count': 0,
+                'limit': limit
+            })
+
         with driver.session() as session:
             # Query to get most central/connected nodes
             if centrality_type == 'degree':
