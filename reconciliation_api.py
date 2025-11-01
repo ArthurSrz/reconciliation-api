@@ -16,6 +16,10 @@ import httpx
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
