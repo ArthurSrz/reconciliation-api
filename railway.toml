@@ -1,0 +1,6 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+numReplicas = 1
+startCommand = "gunicorn --bind 0.0.0.0:$PORT reconciliation_api:app"
