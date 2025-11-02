@@ -200,8 +200,10 @@ def get_graph_relationships():
     Get relationships for the displayed nodes
     Query params:
     - node_ids: comma-separated list of node IDs
+    - limit: max number of relationships to return (default 10000)
     """
     node_ids = request.args.get('node_ids', '').split(',')
+    limit = min(int(request.args.get('limit', 10000)), 50000)  # Cap at 50k relationships
 
     if not node_ids or node_ids == ['']:
         return jsonify({
@@ -209,18 +211,28 @@ def get_graph_relationships():
             'error': 'No node IDs provided'
         }), 400
 
+    # Filter out empty strings from node_ids
+    node_ids = [node_id.strip() for node_id in node_ids if node_id.strip()]
+
+    if len(node_ids) == 0:
+        return jsonify({
+            'success': False,
+            'error': 'No valid node IDs provided'
+        }), 400
+
+    logger.info(f"Fetching relationships for {len(node_ids)} nodes with limit {limit}")
+
     try:
         driver = get_neo4j_driver()
         with driver.session() as session:
             query = """
-            MATCH (n)
-            WHERE elementId(n) IN $node_ids
             MATCH (n)-[r]-(m)
-            WHERE elementId(m) IN $node_ids
-            RETURN DISTINCT n, r, m
+            WHERE elementId(n) IN $node_ids AND elementId(m) IN $node_ids
+            RETURN DISTINCT r, n, m
+            LIMIT $limit
             """
 
-            result = session.run(query, node_ids=node_ids)
+            result = session.run(query, node_ids=node_ids, limit=limit)
             relationships = []
 
             for record in result:
@@ -244,10 +256,15 @@ def get_graph_relationships():
                     'properties': rel_properties
                 })
 
+            logger.info(f"Successfully fetched {len(relationships)} relationships for {len(node_ids)} nodes")
+
             return jsonify({
                 'success': True,
                 'relationships': relationships,
-                'count': len(relationships)
+                'count': len(relationships),
+                'input_nodes': len(node_ids),
+                'limit_applied': limit,
+                'filtered': len(relationships) >= limit
             })
 
     except Exception as e:
