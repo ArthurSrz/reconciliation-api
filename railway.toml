@@ -3,4 +3,4 @@ builder = "nixpacks"
 
 [deploy]
 numReplicas = 1
-startCommand = "python simple_test.py"
+startCommand = "python reconciliation_api.py"
