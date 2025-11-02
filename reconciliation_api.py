@@ -472,6 +472,7 @@ if __name__ == '__main__':
         logger.info(f"GraphRAG connection: {check_graphrag_connection()}")
 
         # Run the Flask app
-        app.run(host='0.0.0.0', port=5002, debug=True)
+        port = int(os.environ.get('PORT', 5002))
+        app.run(host='0.0.0.0', port=port, debug=True)
     finally:
         close_neo4j_driver()
