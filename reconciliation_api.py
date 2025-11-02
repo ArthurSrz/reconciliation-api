@@ -161,10 +161,21 @@ def get_graph_nodes():
             for record in result:
                 node = record['n']
                 degree = record['degree']
+
+                # Convert node properties, handling special types
+                properties = {}
+                for key, value in dict(node).items():
+                    if hasattr(value, 'isoformat'):  # DateTime objects
+                        properties[key] = value.isoformat()
+                    elif isinstance(value, (list, dict)):
+                        properties[key] = value
+                    else:
+                        properties[key] = str(value) if value is not None else None
+
                 nodes.append({
                     'id': node.element_id,
                     'labels': list(node.labels),
-                    'properties': dict(node),
+                    'properties': properties,
                     'degree': degree,
                     'centrality_score': degree  # Will be replaced with actual centrality
                 })
@@ -214,12 +225,23 @@ def get_graph_relationships():
 
             for record in result:
                 rel = record['r']
+
+                # Convert relationship properties, handling special types
+                rel_properties = {}
+                for key, value in dict(rel).items():
+                    if hasattr(value, 'isoformat'):  # DateTime objects
+                        rel_properties[key] = value.isoformat()
+                    elif isinstance(value, (list, dict)):
+                        rel_properties[key] = value
+                    else:
+                        rel_properties[key] = str(value) if value is not None else None
+
                 relationships.append({
                     'id': rel.element_id,
                     'type': rel.type,
                     'source': record['n'].element_id,
                     'target': record['m'].element_id,
-                    'properties': dict(rel)
+                    'properties': rel_properties
                 })
 
             return jsonify({
@@ -389,10 +411,21 @@ def search_graph():
 
             for record in result:
                 node = record['n']
+
+                # Convert node properties, handling special types
+                node_properties = {}
+                for key, value in dict(node).items():
+                    if hasattr(value, 'isoformat'):  # DateTime objects
+                        node_properties[key] = value.isoformat()
+                    elif isinstance(value, (list, dict)):
+                        node_properties[key] = value
+                    else:
+                        node_properties[key] = str(value) if value is not None else None
+
                 nodes.append({
                     'id': node.element_id,
                     'labels': list(node.labels),
-                    'properties': dict(node)
+                    'properties': node_properties
                 })
 
             return jsonify({
