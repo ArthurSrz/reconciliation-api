@@ -23,12 +23,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Make entrypoint script executable
+RUN chmod +x entrypoint.sh
+
 # Set environment variables
 ENV PYTHONPATH=/app:/app/nano_graphrag
 
-# Health check (Railway will set PORT, default to 8080 for health check)
+# Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8080}/health || exit 1
+    CMD curl -f http://localhost:8080/health || exit 1
 
-# Run the application (Railway will provide PORT variable)
-CMD gunicorn --bind 0.0.0.0:$PORT --timeout 300 --workers 1 --worker-class sync reconciliation_api:app
+# Run the application using entrypoint script
+CMD ["./entrypoint.sh"]
