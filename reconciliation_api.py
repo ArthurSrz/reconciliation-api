@@ -76,28 +76,34 @@ GRAPHRAG_WORKING_DIR = os.getenv('GRAPHRAG_WORKING_DIR', './gdrive_correct_data/
 local_graphrag = None
 
 def get_local_graphrag():
-    """Get or create local GraphRAG instance"""
+    """Get or create local GraphRAG instance with real interceptor"""
     global local_graphrag
     if local_graphrag is None:
         from nano_graphrag._llm import gpt_4o_mini_complete
         try:
+            # Créer l'intercepteur LLM comme dans test_query_analysis.py
+            intercepted_llm = graphrag_interceptor.intercept_query_processing(gpt_4o_mini_complete)
+
             local_graphrag = GraphRAG(
                 working_dir=GRAPHRAG_WORKING_DIR,
-                best_model_func=gpt_4o_mini_complete,
-                cheap_model_func=gpt_4o_mini_complete,
+                best_model_func=intercepted_llm,
+                cheap_model_func=intercepted_llm,
                 embedding_func_max_async=4,
                 best_model_max_async=2,
                 cheap_model_max_async=4,
                 embedding_batch_num=16,
                 graph_cluster_algorithm="leiden"
             )
-            logger.info(f"✅ Local GraphRAG initialized with data from: {GRAPHRAG_WORKING_DIR}")
+            logger.info(f"✅ Local GraphRAG initialized with REAL INTERCEPTOR from: {GRAPHRAG_WORKING_DIR}")
         except Exception as e:
             logger.error(f"❌ Failed to initialize local GraphRAG: {e}")
             local_graphrag = None
     return local_graphrag
 
-# GraphRAG Debug Interceptor
+# Import du nouvel intercepteur
+from graphrag_interceptor import graphrag_interceptor
+
+# GraphRAG Debug Interceptor (remplacé par le vrai intercepteur)
 class GraphRAGDebugInterceptor:
     """
     Debug interceptor that captures GraphRAG processing phases
@@ -415,6 +421,60 @@ def get_graph_relationships():
             'error': str(e)
         }), 500
 
+@app.route('/query/local', methods=['POST'])
+def query_local_graphrag():
+    """
+    Endpoint pour tester le GraphRAG local avec vrai intercepteur
+    Comme dans test_query_analysis.py
+    """
+    data = request.json
+    query = data.get('query', '')
+    mode = data.get('mode', 'local')
+    debug_mode = data.get('debug_mode', True)
+
+    if not query:
+        return jsonify({'success': False, 'error': 'Query is required'}), 400
+
+    try:
+        # Utiliser le GraphRAG local avec intercepteur
+        graphrag_instance = get_local_graphrag()
+        if not graphrag_instance:
+            return jsonify({'success': False, 'error': 'Local GraphRAG not available'}), 500
+
+        logger.info(f"🔍 Running local GraphRAG with interceptor: '{query}'")
+        start_time = time.time()
+
+        # Exécuter la requête avec interception
+        result = graphrag_instance.query(query, param=QueryParam(mode=mode))
+        elapsed_time = time.time() - start_time
+
+        # Construire la réponse avec vraies données d'interception
+        response = {
+            'success': True,
+            'query': query,
+            'answer': result,
+            'mode': mode,
+            'processing_time': elapsed_time,
+            'source': 'local_graphrag_with_interceptor',
+            'timestamp': datetime.utcnow().isoformat()
+        }
+
+        # Ajouter les vraies données de debug
+        if debug_mode:
+            debug_info = graphrag_interceptor.get_real_debug_info()
+            response['debug_info'] = debug_info
+            response['interceptor_stats'] = {
+                'queries_processed': graphrag_interceptor.query_counter,
+                'last_analysis_available': bool(graphrag_interceptor.current_analysis)
+            }
+
+        logger.info(f"✅ Local GraphRAG completed in {elapsed_time:.2f}s")
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Error in local GraphRAG query: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/query/reconciled', methods=['POST'])
 @app.route('/graphrag/query', methods=['POST'])
 def query_reconciled():
@@ -522,9 +582,9 @@ def query_reconciled():
 
         # Add debug information if requested
         if debug_mode:
-            debug_info = debug_interceptor.capture_debug_info(graphrag_data)
+            debug_info = graphrag_interceptor.get_real_debug_info()
             reconciled_result['debug_info'] = debug_info
-            logger.info(f"Debug mode: captured {len(debug_info['processing_phases'])} processing phases")
+            logger.info(f"Debug mode: captured REAL data - {debug_info['context_stats']['prompt_length']} chars, {len(debug_info['processing_phases']['entities'])} entities")
 
         # If there are conflicts, Neo4j data takes precedence
         if 'searchPath' in graphrag_data and 'entities' in graphrag_data['searchPath']:

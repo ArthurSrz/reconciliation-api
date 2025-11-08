@@ -38,3 +38,10 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Data files (should be downloaded from GDrive)
+gdrive_correct_data/
+a_rebours_huysmans/
+book_data.zip
+*.json
+*.graphml
