@@ -25,14 +25,10 @@ COPY . .
 
 # Set environment variables
 ENV PYTHONPATH=/app:/app/nano_graphrag
-ENV PORT=8080
 
-# Health check
+# Health check (Railway will set PORT, default to 8080 for health check)
 HEALTHCHECK --interval=30s --timeout=30s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8080}/health || exit 1
 
-# Expose port
-EXPOSE 8080
-
-# Run the application
+# Run the application (Railway will provide PORT variable)
 CMD gunicorn --bind 0.0.0.0:$PORT --timeout 300 --workers 1 --worker-class sync reconciliation_api:app
