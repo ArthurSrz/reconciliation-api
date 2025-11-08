@@ -181,11 +181,14 @@ class GDriveDataManager:
             if self.extracted_dir.exists():
                 shutil.rmtree(self.extracted_dir)
 
-            # Extract zip file
-            with zipfile.ZipFile(self.zip_path, 'r') as zip_ref:
-                zip_ref.extractall(self.data_dir)
+            # Create the borges_graph directory
+            self.extracted_dir.mkdir(parents=True, exist_ok=True)
 
-            logger.info(f"✅ Extracted data to {self.data_dir}")
+            # Extract zip file to the correct directory
+            with zipfile.ZipFile(self.zip_path, 'r') as zip_ref:
+                zip_ref.extractall(self.extracted_dir)
+
+            logger.info(f"✅ Extracted data to {self.extracted_dir}")
 
             # Clean up zip file
             self.zip_path.unlink()
