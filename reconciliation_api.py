@@ -18,6 +18,7 @@ from datetime import datetime
 import json
 import re
 import csv
+from nano_graphrag import GraphRAG, QueryParam
 from io import StringIO
 from functools import wraps
 import time
@@ -69,6 +70,32 @@ def close_neo4j_driver():
     if neo4j_driver:
         neo4j_driver.close()
         neo4j_driver = None
+
+# Local GraphRAG Configuration
+GRAPHRAG_WORKING_DIR = os.getenv('GRAPHRAG_WORKING_DIR', './gdrive_correct_data/borges_graph/a_rebours_huysmans')
+local_graphrag = None
+
+def get_local_graphrag():
+    """Get or create local GraphRAG instance"""
+    global local_graphrag
+    if local_graphrag is None:
+        from nano_graphrag._llm import gpt_4o_mini_complete
+        try:
+            local_graphrag = GraphRAG(
+                working_dir=GRAPHRAG_WORKING_DIR,
+                best_model_func=gpt_4o_mini_complete,
+                cheap_model_func=gpt_4o_mini_complete,
+                embedding_func_max_async=4,
+                best_model_max_async=2,
+                cheap_model_max_async=4,
+                embedding_batch_num=16,
+                graph_cluster_algorithm="leiden"
+            )
+            logger.info(f"✅ Local GraphRAG initialized with data from: {GRAPHRAG_WORKING_DIR}")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize local GraphRAG: {e}")
+            local_graphrag = None
+    return local_graphrag
 
 # GraphRAG Debug Interceptor
 class GraphRAGDebugInterceptor:
@@ -450,7 +477,7 @@ def query_reconciled():
         enhanced_query = context_prefix + query
         logger.info(f"🔍 Sending to GraphRAG: {enhanced_query[:100]}...")
 
-        # Step 3: Query GraphRAG with context (using synchronous httpx)
+        # Step 3: Query Railway GraphRAG with context (using Google Drive data)
         with httpx.Client() as client:
             graphrag_response = client.post(
                 f"{GRAPHRAG_API_URL}/query",
