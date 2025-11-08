@@ -2,6 +2,7 @@
 """
 GraphRAG API v3 - Improved data management for Railway
 With robust Google Drive download and data persistence
+Now with actual NanoGraphRAG integration for detailed responses
 """
 
 from flask import Flask, request, jsonify
@@ -16,6 +17,27 @@ import zipfile
 import html
 import traceback
 import time
+import sys
+
+# Add nano-graphrag to path
+sys.path.append('/opt/render/project/src/nano-graphrag')
+sys.path.append('./nano-graphrag')
+sys.path.append('./nano_graphrag')
+
+try:
+    from nano_graphrag import GraphRAG, QueryParam
+    NANO_GRAPHRAG_AVAILABLE = True
+    print("✅ NanoGraphRAG imported successfully")
+except ImportError as e:
+    print(f"⚠️ NanoGraphRAG not available: {e}")
+    try:
+        # Try importing from local copy
+        from nano_graphrag import GraphRAG, QueryParam
+        NANO_GRAPHRAG_AVAILABLE = True
+        print("✅ NanoGraphRAG imported from local copy")
+    except ImportError as e2:
+        print(f"⚠️ NanoGraphRAG not available locally either: {e2}")
+        NANO_GRAPHRAG_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -33,6 +55,9 @@ supports_credentials=True)
 
 # Global cache for parsed data
 PARSED_DATA_CACHE = {}
+
+# Global cache for GraphRAG instances
+GRAPHRAG_INSTANCES = {}
 
 def download_file_from_google_drive(file_id, destination):
     """Download file from Google Drive with improved error handling"""
@@ -299,10 +324,114 @@ def parse_graphml_cached(book_id, graph_path):
         traceback.print_exc()
         return [], []
 
-def generate_answer(query, book_id, entities, relationships):
+def initialize_graphrag_for_book(book_id, book_path):
+    """Initialize GraphRAG instance for a specific book"""
+    global GRAPHRAG_INSTANCES
+
+    if not NANO_GRAPHRAG_AVAILABLE:
+        print(f"⚠️ NanoGraphRAG not available, cannot initialize for {book_id}")
+        return None
+
+    # Check if already initialized
+    if book_id in GRAPHRAG_INSTANCES:
+        print(f"📚 Using existing GraphRAG instance for {book_id}")
+        return GRAPHRAG_INSTANCES[book_id]
+
+    try:
+        print(f"🔄 Initializing GraphRAG for {book_id} at {book_path}")
+
+        # Check if book directory has the necessary files for GraphRAG
+        working_dir = Path(book_path).parent
+
+        # Look for required GraphRAG files (these should be in the Google Drive data)
+        required_files = [
+            'kv_store_full_docs.json',
+            'kv_store_text_chunks.json',
+            'vdb_entities.json',
+            'kv_store_community_reports.json'
+        ]
+
+        # Check what files are actually available
+        available_files = list(working_dir.glob('*.json'))
+        print(f"📄 Available files in {working_dir}: {[f.name for f in available_files]}")
+
+        missing_files = []
+        for file in required_files:
+            if not (working_dir / file).exists():
+                missing_files.append(file)
+
+        if missing_files:
+            print(f"⚠️ Missing GraphRAG files for {book_id}: {missing_files}")
+            # Don't return None immediately - try to initialize anyway
+            print(f"🔄 Attempting to initialize GraphRAG anyway...")
+        else:
+            print(f"✅ All required GraphRAG files found for {book_id}")
+
+        # Initialize GraphRAG
+        graph_rag = GraphRAG(
+            working_dir=str(working_dir),
+            embedding_func_max_async=4,
+            best_model_max_async=2,
+            cheap_model_max_async=4,
+            embedding_batch_num=16,
+            graph_cluster_algorithm="leiden"
+        )
+
+        # Cache the instance
+        GRAPHRAG_INSTANCES[book_id] = graph_rag
+        print(f"✅ GraphRAG initialized successfully for {book_id}")
+        return graph_rag
+
+    except Exception as e:
+        print(f"❌ Failed to initialize GraphRAG for {book_id}: {e}")
+        traceback.print_exc()
+        return None
+
+def generate_answer_with_graphrag(query, book_id, graph_rag_instance):
+    """Generate answer using actual GraphRAG processing"""
+
+    if not graph_rag_instance:
+        print(f"⚠️ No GraphRAG instance available for {book_id}, falling back to simple method")
+        return None
+
+    try:
+        print(f"🔍 Processing query with GraphRAG: '{query}' for book {book_id}")
+
+        # Use GraphRAG to generate a comprehensive answer (try global mode first)
+        result = graph_rag_instance.query(query, param=QueryParam(mode="global"))
+
+        print(f"✅ GraphRAG query completed, result length: {len(result)} characters")
+
+        return {
+            "success": True,
+            "answer": result,
+            "method": "graphrag",
+            "book_id": book_id,
+            "searchPath": {
+                "entities": [],
+                "relations": [],
+                "communities": []
+            }
+        }
+
+    except Exception as e:
+        print(f"❌ GraphRAG query failed for {book_id}: {e}")
+        traceback.print_exc()
+        return None
+
+def generate_answer(query, book_id, entities, relationships, graph_rag_instance=None):
     """Generate an answer based on the query and graph data"""
 
-    # Simple keyword matching
+    # Try GraphRAG first if available
+    if graph_rag_instance and NANO_GRAPHRAG_AVAILABLE:
+        graphrag_result = generate_answer_with_graphrag(query, book_id, graph_rag_instance)
+        if graphrag_result:
+            print(f"✅ Using GraphRAG answer for {book_id}")
+            return graphrag_result
+
+    # Fall back to simple keyword matching
+    print(f"📝 Using simple answer generation for {book_id}")
+
     query_lower = query.lower()
     query_words = [w for w in query_lower.split() if len(w) > 2]
 
@@ -362,6 +491,8 @@ def generate_answer(query, book_id, entities, relationships):
     return {
         "success": True,
         "answer": answer,
+        "method": "simple",
+        "book_id": book_id,
         "searchPath": {
             "entities": [
                 {
@@ -452,8 +583,11 @@ def query_graph():
                 "suggestion": "Try another book or wait for data to load"
             }), 500
 
-        # Generate response
-        response = generate_answer(query, book_id, entities, relationships)
+        # Try to initialize GraphRAG instance for this book
+        graph_rag_instance = initialize_graphrag_for_book(book_id, book_data['graph_path'])
+
+        # Generate response (GraphRAG if available, otherwise simple)
+        response = generate_answer(query, book_id, entities, relationships, graph_rag_instance)
 
         return jsonify(response)
 
