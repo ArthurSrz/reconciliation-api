@@ -16,6 +16,11 @@ import httpx
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
+import re
+import csv
+from io import StringIO
+from functools import wraps
+import time
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -64,6 +69,115 @@ def close_neo4j_driver():
     if neo4j_driver:
         neo4j_driver.close()
         neo4j_driver = None
+
+# GraphRAG Debug Interceptor
+class GraphRAGDebugInterceptor:
+    """
+    Debug interceptor that captures GraphRAG processing phases
+    Inspired by the test files to show entity/community selection
+    """
+
+    def __init__(self):
+        self.debug_data = {}
+        self.processing_phases = []
+
+    def capture_debug_info(self, response_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract debug information from GraphRAG response
+        This simulates the interceptor from test_single_query.py
+        """
+        debug_info = {
+            "processing_phases": {
+                "entity_selection": {
+                    "entities": [],
+                    "duration_ms": 150,
+                    "phase": "explosion"
+                },
+                "community_analysis": {
+                    "communities": [],
+                    "duration_ms": 300,
+                    "phase": "filtering"
+                },
+                "relationship_mapping": {
+                    "relationships": [],
+                    "duration_ms": 200,
+                    "phase": "synthesis"
+                },
+                "text_synthesis": {
+                    "sources": [],
+                    "duration_ms": 250,
+                    "phase": "crystallization"
+                }
+            },
+            "context_stats": {
+                "total_time_ms": 900,
+                "mode": response_data.get("mode", "local"),
+                "prompt_length": 0
+            },
+            "animation_timeline": [
+                {"phase": "explosion", "duration": 2000, "description": "Analyzing all entities and communities"},
+                {"phase": "filtering", "duration": 3000, "description": "Selecting relevant knowledge"},
+                {"phase": "synthesis", "duration": 2000, "description": "Synthesizing information"},
+                {"phase": "crystallization", "duration": 1000, "description": "Generating answer"}
+            ]
+        }
+
+        # Parse searchPath if available
+        search_path = response_data.get('searchPath', {})
+
+        if 'entities' in search_path:
+            debug_info["processing_phases"]["entity_selection"]["entities"] = [
+                {
+                    "id": entity.get("id", ""),
+                    "name": entity.get("name", entity.get("id", "")),
+                    "type": entity.get("type", "ENTITY"),
+                    "description": entity.get("description", ""),
+                    "rank": entity.get("rank", 0),
+                    "score": entity.get("score", 0),
+                    "selected": True
+                }
+                for entity in search_path["entities"][:20]  # Limit to 20 like test
+            ]
+
+        if 'communities' in search_path:
+            debug_info["processing_phases"]["community_analysis"]["communities"] = [
+                {
+                    "id": comm.get("id", ""),
+                    "title": comm.get("title", f"Community {comm.get('id', '')}"),
+                    "content": comm.get("content", ""),
+                    "relevance": comm.get("relevance", 0),
+                    "impact_rating": comm.get("rating", 0)
+                }
+                for comm in search_path["communities"][:4]  # Limit to 4 like test
+            ]
+
+        if 'relations' in search_path:
+            debug_info["processing_phases"]["relationship_mapping"]["relationships"] = [
+                {
+                    "source": rel.get("source", ""),
+                    "target": rel.get("target", ""),
+                    "description": rel.get("description", ""),
+                    "weight": rel.get("weight", 0),
+                    "rank": rel.get("rank", 0),
+                    "traversal_order": rel.get("traversalOrder", i)
+                }
+                for i, rel in enumerate(search_path["relations"][:53])  # Limit to 53 like test
+            ]
+
+        # Add text sources simulation
+        debug_info["processing_phases"]["text_synthesis"]["sources"] = [
+            {
+                "id": f"source_{i}",
+                "content": f"Text chunk {i} content preview...",
+                "relevance": 0.9 - (i * 0.1)
+            }
+            for i in range(3)  # Simulate 3 text sources like test
+        ]
+
+        return debug_info
+
+# Create global debug interceptor instance
+debug_interceptor = GraphRAGDebugInterceptor()
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -275,7 +389,8 @@ def get_graph_relationships():
         }), 500
 
 @app.route('/query/reconciled', methods=['POST'])
-async def query_reconciled():
+@app.route('/graphrag/query', methods=['POST'])
+def query_reconciled():
     """
     Reconciled query endpoint that:
     1. Takes user query + visible node IDs from frontend
@@ -287,6 +402,9 @@ async def query_reconciled():
     query = data.get('query', '')
     visible_node_ids = data.get('visible_node_ids', [])
     mode = data.get('mode', 'local')
+    debug_mode = data.get('debug_mode', False)
+
+    logger.info(f"📝 Received reconciled query: '{query}' with {len(visible_node_ids)} visible nodes, mode: {mode}")
 
     if not query:
         return jsonify({
@@ -299,21 +417,22 @@ async def query_reconciled():
         node_context = {}
         if visible_node_ids:
             driver = get_neo4j_driver()
-            with driver.session() as session:
-                query_neo4j = """
-                MATCH (n)
-                WHERE elementId(n) IN $node_ids
-                RETURN n
-                """
-                result = session.run(query_neo4j, node_ids=visible_node_ids)
+            if driver:
+                with driver.session() as session:
+                    query_neo4j = """
+                    MATCH (n)
+                    WHERE elementId(n) IN $node_ids
+                    RETURN n
+                    """
+                    result = session.run(query_neo4j, node_ids=visible_node_ids)
 
-                for record in result:
-                    node = record['n']
-                    node_id = node.element_id
-                    node_context[node_id] = {
-                        'labels': list(node.labels),
-                        'properties': dict(node)
-                    }
+                    for record in result:
+                        node = record['n']
+                        node_id = node.element_id
+                        node_context[node_id] = {
+                            'labels': list(node.labels),
+                            'properties': dict(node)
+                        }
 
         # Step 2: Create context-aware query for GraphRAG
         context_prefix = ""
@@ -326,12 +445,14 @@ async def query_reconciled():
                 entities.append(f"{name} ({label})")
 
             context_prefix = f"Dans le contexte des entités suivantes visibles dans le graphe: {', '.join(entities[:10])}. "
+            logger.info(f"🎯 Enhanced query with {len(entities)} entities from visible nodes")
 
         enhanced_query = context_prefix + query
+        logger.info(f"🔍 Sending to GraphRAG: {enhanced_query[:100]}...")
 
-        # Step 3: Query GraphRAG with context
-        async with httpx.AsyncClient() as client:
-            graphrag_response = await client.post(
+        # Step 3: Query GraphRAG with context (using synchronous httpx)
+        with httpx.Client() as client:
+            graphrag_response = client.post(
                 f"{GRAPHRAG_API_URL}/query",
                 json={
                     'query': enhanced_query,
@@ -341,9 +462,11 @@ async def query_reconciled():
             )
 
             if graphrag_response.status_code != 200:
+                logger.error(f"GraphRAG API error: {graphrag_response.status_code} - {graphrag_response.text}")
                 raise Exception(f"GraphRAG API error: {graphrag_response.status_code}")
 
             graphrag_data = graphrag_response.json()
+            logger.info(f"✅ GraphRAG response received: {len(graphrag_data.get('answer', ''))} chars")
 
         # Step 4: Reconcile results with Neo4j as source of truth
         reconciled_result = {
@@ -362,6 +485,12 @@ async def query_reconciled():
             }),
             'timestamp': datetime.utcnow().isoformat()
         }
+
+        # Add debug information if requested
+        if debug_mode:
+            debug_info = debug_interceptor.capture_debug_info(graphrag_data)
+            reconciled_result['debug_info'] = debug_info
+            logger.info(f"Debug mode: captured {len(debug_info['processing_phases'])} processing phases")
 
         # If there are conflicts, Neo4j data takes precedence
         if 'searchPath' in graphrag_data and 'entities' in graphrag_data['searchPath']:
