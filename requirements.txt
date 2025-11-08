@@ -5,3 +5,13 @@ httpx==0.25.1
 python-dotenv==1.0.0
 gunicorn==21.2.0
 werkzeug==3.0.0
+
+# NanoGraphRAG dependencies
+numpy>=1.21.0
+networkx>=2.6
+openai>=1.0.0
+tiktoken>=0.3.0
+tenacity>=8.0.0
+asyncio-throttle>=1.0.0
+nano-vectordb>=0.1.0
+graspologic>=3.0.0
