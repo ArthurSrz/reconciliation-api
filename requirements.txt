@@ -13,5 +13,5 @@ openai>=1.0.0
 tiktoken>=0.3.0
 tenacity>=8.0.0
 asyncio-throttle>=1.0.0
-nano-vectordb>=0.1.0
+nano-vectordb>=0.0.4
 graspologic>=3.0.0
