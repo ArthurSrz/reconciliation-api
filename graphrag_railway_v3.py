@@ -220,6 +220,353 @@ def find_books():
 
     return books
 
+def select_best_book_for_query(query, books):
+    """Select the best book for a query using keyword matching"""
+    query_lower = query.lower()
+
+    # Book-specific keywords for better matching
+    book_keywords = {
+        'a_rebours_huysmans': ['esseintes', 'des esseintes', 'huysmans', 'rebours', 'parfums', 'décadence', 'esthète'],
+        'racines_ciel_gary': ['gary', 'racines', 'ciel', 'éléphants', 'afrique', 'morel'],
+        'chien_blanc_gary': ['chien blanc', 'romain gary', 'racisme', 'amérique', 'hollywood'],
+        'peau_bison_frison': ['bison', 'peau', 'frison', 'indiens', 'western', 'prairie'],
+        'policeman_decoin': ['policeman', 'police', 'decoin', 'enquête', 'crime'],
+        'tilleul_soir_anglade': ['tilleul', 'soir', 'anglade', 'provence', 'village'],
+        'vallee_sans_hommes_frison': ['vallée sans hommes', 'vallée', 'frison', 'solitude'],
+        'villa_triste_modiano': ['villa triste', 'modiano', 'nostalgie', 'mémoire', 'nice']
+    }
+
+    # Score each book based on keyword matches
+    best_score = 0
+    best_book = None
+
+    for book in books:
+        book_id = book['id']
+        if book_id in book_keywords:
+            score = 0
+            for keyword in book_keywords[book_id]:
+                if keyword in query_lower:
+                    score += len(keyword)  # Longer keywords get higher scores
+
+            if score > best_score:
+                best_score = score
+                best_book = book_id
+
+    # If no specific match found, search across all books or use a default strategy
+    if not best_book:
+        print(f"🔍 No specific book keywords found for query: '{query[:50]}...', using multi-book strategy")
+        # For general queries like "quels livres sont disponibles", try to search multiple books
+        if any(word in query_lower for word in ['livres', 'books', 'disponibles', 'available', 'liste', 'catalog']):
+            # For catalog queries, use a representative book or implement multi-book search
+            best_book = 'racines_ciel_gary'  # Use a different default to show variety
+        else:
+            # For other queries, use the first book
+            best_book = books[0]['id'] if books else None
+
+    return best_book
+
+def should_search_multiple_books(query):
+    """Determine if query should search across multiple books"""
+    query_lower = query.lower()
+    multi_book_keywords = [
+        'livres', 'books', 'disponibles', 'available', 'catalogue', 'catalog',
+        'liste', 'list', 'collection', 'bibliothèque', 'library',
+        'quels livres', 'which books', 'tous les livres', 'all books',
+        'différents livres', 'different books'
+    ]
+
+    return any(keyword in query_lower for keyword in multi_book_keywords)
+
+def generate_multi_book_answer(query, books):
+    """Generate answer by searching across ALL books with GraphRAG"""
+    print(f"🔍 Searching query '{query}' across {len(books)} books...")
+
+    best_response = None
+    best_score = 0
+    all_entities = []
+    all_relations = []
+
+    # Search each book with GraphRAG
+    for book in books:
+        try:
+            print(f"📖 Searching in book: {book['name']}")
+
+            # Parse book data
+            entities, relationships = parse_book_data(book['graph_path'])
+            if not entities:
+                print(f"  ⚠️ No entities found for {book['id']}")
+                continue
+
+            # Try to initialize GraphRAG for this book
+            graph_rag_instance = initialize_graphrag_for_book(book['id'], book['graph_path'])
+
+            # Generate answer for this book
+            book_response = generate_answer(query, book['id'], entities, relationships, graph_rag_instance)
+
+            if book_response and book_response.get('success'):
+                answer = book_response.get('answer', '')
+
+                # Score based on answer length and relevance (simple heuristic)
+                score = len(answer) if answer and answer != "Sorry, I'm not able to provide an answer to that question." else 0
+
+                print(f"  📊 Book {book['id']} score: {score}")
+
+                if score > best_score:
+                    best_score = score
+                    best_response = book_response
+                    best_response['source_book'] = book['name']
+
+                # Collect entities and relations from all books
+                if 'searchPath' in book_response:
+                    search_path = book_response['searchPath']
+                    if 'entities' in search_path:
+                        for entity in search_path['entities'][:3]:  # Limit per book
+                            entity['source_book'] = book['name']
+                            all_entities.append(entity)
+                    if 'relations' in search_path:
+                        for relation in search_path['relations'][:3]:  # Limit per book
+                            relation['source_book'] = book['name']
+                            all_relations.append(relation)
+
+        except Exception as e:
+            print(f"❌ Error searching book {book['id']}: {e}")
+            continue
+
+    # Return the best response found, or a combined response
+    if best_response:
+        print(f"✅ Best response from book: {best_response.get('source_book', 'unknown')}")
+
+        # Enhance with multi-book entities
+        if 'searchPath' in best_response:
+            best_response['searchPath']['entities'] = all_entities[:20]  # Limit total entities
+            best_response['searchPath']['relations'] = all_relations[:15]  # Limit total relations
+
+        return best_response
+    else:
+        # No good response found, return general info about available books
+        book_list = ", ".join([book['name'] for book in books])
+        return {
+            'success': True,
+            'answer': f"Je n'ai pas trouvé d'information spécifique pour votre question dans les {len(books)} livres disponibles: {book_list}. Essayez une question plus spécifique ou mentionnez un livre particulier.",
+            'searchPath': {
+                'entities': all_entities[:10],
+                'relations': all_relations[:5],
+                'communities': []
+            }
+        }
+
+# Global unified GraphRAG instance
+UNIFIED_GRAPHRAG = None
+
+def create_unified_working_directory():
+    """Create a unified working directory by merging all book data"""
+    import shutil
+
+    unified_dir = "unified_books"
+
+    # Clean up existing unified directory
+    if os.path.exists(unified_dir):
+        shutil.rmtree(unified_dir)
+
+    os.makedirs(unified_dir)
+    print(f"📁 Created unified directory: {unified_dir}")
+
+    books = find_books()
+    all_entities = {}
+    all_relationships = []
+    all_text_chunks = {}
+    all_full_docs = {}
+
+    # Merge data from all books
+    for book in books:
+        book_dir = book['id']
+        print(f"🔄 Merging data from: {book_dir}")
+
+        try:
+            # Load entities
+            entities_file = f"{book_dir}/vdb_entities.json"
+            if os.path.exists(entities_file):
+                with open(entities_file, 'r', encoding='utf-8') as f:
+                    entities_data = json.load(f)
+                    if 'entities' in entities_data:
+                        for entity in entities_data['entities']:
+                            entity_name = entity.get('entity_name', '')
+                            if entity_name:
+                                # Prefix entity with book name to avoid conflicts
+                                prefixed_name = f"{book_dir}_{entity_name}"
+                                entity['entity_name'] = prefixed_name
+                                all_entities[prefixed_name] = entity
+
+            # Load text chunks
+            chunks_file = f"{book_dir}/kv_store_text_chunks.json"
+            if os.path.exists(chunks_file):
+                with open(chunks_file, 'r', encoding='utf-8') as f:
+                    chunks_data = json.load(f)
+                    for key, value in chunks_data.items():
+                        all_text_chunks[f"{book_dir}_{key}"] = value
+
+            # Load full docs
+            docs_file = f"{book_dir}/kv_store_full_docs.json"
+            if os.path.exists(docs_file):
+                with open(docs_file, 'r', encoding='utf-8') as f:
+                    docs_data = json.load(f)
+                    for key, value in docs_data.items():
+                        all_full_docs[f"{book_dir}_{key}"] = value
+
+        except Exception as e:
+            print(f"❌ Error merging {book_dir}: {e}")
+            continue
+
+    # Write unified files
+    try:
+        # Write unified entities
+        unified_entities = {
+            "entities": list(all_entities.values())
+        }
+        with open(f"{unified_dir}/vdb_entities.json", 'w', encoding='utf-8') as f:
+            json.dump(unified_entities, f, ensure_ascii=False, indent=2)
+
+        # Write unified text chunks
+        with open(f"{unified_dir}/kv_store_text_chunks.json", 'w', encoding='utf-8') as f:
+            json.dump(all_text_chunks, f, ensure_ascii=False, indent=2)
+
+        # Write unified full docs
+        with open(f"{unified_dir}/kv_store_full_docs.json", 'w', encoding='utf-8') as f:
+            json.dump(all_full_docs, f, ensure_ascii=False, indent=2)
+
+        print(f"✅ Unified data created:")
+        print(f"  📊 {len(all_entities)} entities")
+        print(f"  📄 {len(all_text_chunks)} text chunks")
+        print(f"  📚 {len(all_full_docs)} documents")
+
+        return unified_dir
+
+    except Exception as e:
+        print(f"❌ Error writing unified data: {e}")
+        return None
+
+def get_unified_graphrag():
+    """Get or create unified GraphRAG instance"""
+    global UNIFIED_GRAPHRAG
+
+    if UNIFIED_GRAPHRAG is None and NANO_GRAPHRAG_AVAILABLE:
+        print("🔧 Creating unified GraphRAG instance...")
+
+        # Create unified working directory
+        unified_dir = create_unified_working_directory()
+        if not unified_dir:
+            return None
+
+        try:
+            from nano_graphrag._llm import gpt_4o_mini_complete
+
+            UNIFIED_GRAPHRAG = GraphRAG(
+                working_dir=unified_dir,
+                best_model_func=gpt_4o_mini_complete,
+                cheap_model_func=gpt_4o_mini_complete,
+                embedding_func_max_async=4,
+                best_model_max_async=2,
+                cheap_model_max_async=4,
+                embedding_batch_num=16,
+                graph_cluster_algorithm="leiden"
+            )
+            print("✅ Unified GraphRAG instance created!")
+
+        except Exception as e:
+            print(f"❌ Error creating unified GraphRAG: {e}")
+            UNIFIED_GRAPHRAG = None
+
+    return UNIFIED_GRAPHRAG
+
+def generate_multi_graphrag_answer(query, books):
+    """Generate answer using multiple GraphRAG instances (one per book) and aggregate results"""
+    print(f"🔍 Generating multi-GraphRAG answer for: '{query}'")
+
+    if not NANO_GRAPHRAG_AVAILABLE:
+        return generate_multi_book_answer(query, books)
+
+    from nano_graphrag._llm import gpt_4o_mini_complete
+
+    all_results = []
+    successful_books = []
+
+    for book_dir in books:
+        if not os.path.exists(book_dir):
+            print(f"⚠️ Directory {book_dir} not found, skipping")
+            continue
+
+        # Check if this book has GraphRAG data
+        required_files = [
+            f"{book_dir}/vdb_entities.json",
+            f"{book_dir}/kv_store_community_reports.json",
+            f"{book_dir}/graph_chunk_entity_relation.graphml"
+        ]
+
+        if not all(os.path.exists(f) for f in required_files):
+            print(f"⚠️ {book_dir} missing GraphRAG files, skipping")
+            continue
+
+        try:
+            print(f"📚 Querying {book_dir}...")
+
+            # Create GraphRAG instance for this book
+            book_rag = GraphRAG(
+                working_dir=book_dir,
+                best_model_func=gpt_4o_mini_complete,
+                cheap_model_func=gpt_4o_mini_complete,
+                embedding_func_max_async=4,
+                best_model_max_async=2,
+                cheap_model_max_async=4,
+                embedding_batch_num=16,
+                graph_cluster_algorithm="leiden"
+            )
+
+            # Query using global mode like test_query_analysis.py
+            result = book_rag.query(query, param=QueryParam(mode="global"))
+
+            if result and len(result.strip()) > 10:  # Valid non-empty result
+                all_results.append({
+                    'book': book_dir,
+                    'result': result
+                })
+                successful_books.append(book_dir)
+                print(f"✅ Found relevant content in {book_dir}")
+            else:
+                print(f"🔍 No relevant content found in {book_dir}")
+
+        except Exception as e:
+            print(f"❌ Error querying {book_dir}: {e}")
+            continue
+
+    # Aggregate and format results
+    if not all_results:
+        return {
+            'success': False,
+            'answer': "Je n'ai pas trouvé d'informations spécifiques sur cette question dans les livres disponibles.",
+            'books_searched': len(books),
+            'books_with_content': 0
+        }
+
+    # Format the aggregated answer
+    formatted_answer = f"Voici les informations que j'ai trouvées :\n\n"
+
+    for i, result_data in enumerate(all_results, 1):
+        book_name = result_data['book'].replace('_', ' ').title()
+        formatted_answer += f"**{book_name}:**\n{result_data['result']}\n\n"
+
+    return {
+        'success': True,
+        'answer': formatted_answer.strip(),
+        'books_searched': len(books),
+        'books_with_content': len(successful_books),
+        'successful_books': successful_books,
+        'searchPath': {
+            'entities': [],  # Could be enhanced to extract from result
+            'relations': [],
+            'communities': []
+        }
+    }
+
 def clean_text(text):
     """Clean text from HTML entities and quotes"""
     if not text:
@@ -556,38 +903,43 @@ def query_graph():
         if not books:
             return jsonify({"error": "No books available. Data may still be downloading."}), 503
 
-        # Use first book if not specified
+        # If no specific book is requested, search across all books using GraphRAG
         if not book_id:
-            book_id = books[0]['id']
+            print("🔍 No specific book requested, searching across all books with GraphRAG...")
+            # Get book directories for GraphRAG
+            book_dirs = [book['graph_path'].replace('/graph_chunk_entity_relation.graphml', '') for book in books]
+            response = generate_multi_graphrag_answer(query, book_dirs)
+        else:
+            print(f"📖 Using specified book: {book_id}")
 
-        # Find the book
-        book_data = None
-        for book in books:
-            if book['id'] == book_id:
-                book_data = book
-                break
+            # Find the book
+            book_data = None
+            for book in books:
+                if book['id'] == book_id:
+                    book_data = book
+                    break
 
-        if not book_data:
-            available = [b['id'] for b in books]
-            return jsonify({
-                "error": f"Book '{book_id}' not found",
-                "available_books": available
-            }), 404
+            if not book_data:
+                available = [b['id'] for b in books]
+                return jsonify({
+                    "error": f"Book '{book_id}' not found",
+                    "available_books": available
+                }), 404
 
-        # Parse the graph data (with caching)
-        entities, relationships = parse_graphml_cached(book_id, book_data['graph_path'])
+            # Parse the graph data (with caching)
+            entities, relationships = parse_graphml_cached(book_id, book_data['graph_path'])
 
-        if not entities:
-            return jsonify({
-                "error": f"Failed to parse data for book '{book_id}'",
-                "suggestion": "Try another book or wait for data to load"
-            }), 500
+            if not entities:
+                return jsonify({
+                    "error": f"Failed to parse data for book '{book_id}'",
+                    "suggestion": "Try another book or wait for data to load"
+                }), 500
 
-        # Try to initialize GraphRAG instance for this book
-        graph_rag_instance = initialize_graphrag_for_book(book_id, book_data['graph_path'])
+            # Try to initialize GraphRAG instance for this book
+            graph_rag_instance = initialize_graphrag_for_book(book_id, book_data['graph_path'])
 
-        # Generate response (GraphRAG if available, otherwise simple)
-        response = generate_answer(query, book_id, entities, relationships, graph_rag_instance)
+            # Generate response (GraphRAG if available, otherwise simple)
+            response = generate_answer(query, book_id, entities, relationships, graph_rag_instance)
 
         return jsonify(response)
 
