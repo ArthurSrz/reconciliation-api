@@ -49,7 +49,7 @@ CORS(app, origins=[
 NEO4J_URI = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
 NEO4J_USER = os.getenv('NEO4J_USER', 'neo4j')
 NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', 'password')
-GRAPHRAG_API_URL = os.getenv('GRAPHRAG_API_URL', 'https://nano-graphrag-production.up.railway.app')
+GRAPHRAG_API_URL = os.getenv('GRAPHRAG_API_URL', 'https://borgesgraph-production.up.railway.app')
 
 # Neo4j driver instance
 neo4j_driver = None
@@ -430,8 +430,9 @@ def query_reconciled():
     visible_node_ids = data.get('visible_node_ids', [])
     mode = data.get('mode', 'local')
     debug_mode = data.get('debug_mode', False)
+    book_id = data.get('book_id', None)  # Add book_id parameter
 
-    logger.info(f"📝 Received reconciled query: '{query}' with {len(visible_node_ids)} visible nodes, mode: {mode}")
+    logger.info(f"📝 Received reconciled query: '{query}' with {len(visible_node_ids)} visible nodes, mode: {mode}, book_id: {book_id}")
 
     if not query:
         return jsonify({
@@ -479,12 +480,18 @@ def query_reconciled():
 
         # Step 3: Query Railway GraphRAG with context (using Google Drive data)
         with httpx.Client() as client:
+            # Build request payload
+            graphrag_payload = {
+                'query': enhanced_query,
+                'mode': mode
+            }
+            # Add book_id if provided
+            if book_id:
+                graphrag_payload['book_id'] = book_id
+
             graphrag_response = client.post(
                 f"{GRAPHRAG_API_URL}/query",
-                json={
-                    'query': enhanced_query,
-                    'mode': mode
-                },
+                json=graphrag_payload,
                 timeout=30.0
             )
 
