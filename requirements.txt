@@ -6,18 +6,20 @@ python-dotenv==1.0.0
 gunicorn==21.2.0
 werkzeug==3.0.0
 
-# NanoGraphRAG dependencies
-numpy>=1.21.0
-networkx>=2.6
+# NanoGraphRAG dependencies - complete set for Railway
+future>=1.0.0
 openai>=1.0.0
 tiktoken>=0.3.0
-tenacity>=8.0.0
-asyncio-throttle>=1.0.0
-nano-vectordb>=0.0.4
+networkx>=2.6
 graspologic>=3.0.0
-aioboto3>=12.0.0
-transformers>=4.0.0
+nano-vectordb>=0.0.4
 hnswlib>=0.8.0
-torch>=2.0.0
-pandas>=2.0.0
+xxhash>=3.0.0
+tenacity>=8.0.0
+dspy-ai>=2.0.0
+aioboto3>=12.0.0
+numpy>=1.21.0
+scipy>=1.7.0
 scikit-learn>=1.0.0
+pandas>=2.0.0
+transformers>=4.20.0
