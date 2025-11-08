@@ -16,3 +16,4 @@ asyncio-throttle>=1.0.0
 nano-vectordb>=0.0.4
 graspologic>=3.0.0
 aioboto3>=12.0.0
+transformers>=4.0.0
