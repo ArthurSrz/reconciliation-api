@@ -71,21 +71,36 @@ def close_neo4j_driver():
         neo4j_driver.close()
         neo4j_driver = None
 
-# Local GraphRAG Configuration
-GRAPHRAG_WORKING_DIR = os.getenv('GRAPHRAG_WORKING_DIR', './gdrive_correct_data/borges_graph/a_rebours_huysmans')
+# Local GraphRAG Configuration with dynamic data loading
+GRAPHRAG_WORKING_DIR = os.getenv('GRAPHRAG_WORKING_DIR', None)  # Will be set dynamically
 local_graphrag = None
+gdrive_data_path = None
 
-def get_local_graphrag():
-    """Get or create local GraphRAG instance with real interceptor"""
-    global local_graphrag
-    if local_graphrag is None:
-        from nano_graphrag._llm import gpt_4o_mini_complete
-        try:
+def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
+    """Get or create local GraphRAG instance with real interceptor and GDrive data"""
+    global local_graphrag, gdrive_data_path
+
+    # Always ensure we have fresh data for the requested book
+    try:
+        # Ensure data is available from GDrive
+        logger.info(f"📥 Ensuring GraphRAG data is available for book: {book_id}")
+        base_data_path = gdrive_manager.ensure_data_available()
+        book_data_path = gdrive_manager.get_book_data_path(book_id)
+
+        if not book_data_path:
+            available_books = gdrive_manager.list_available_books()
+            logger.error(f"❌ Book {book_id} not found. Available: {available_books}")
+            return None
+
+        # Only recreate GraphRAG if path changed or doesn't exist
+        if local_graphrag is None or gdrive_data_path != book_data_path:
+            from nano_graphrag._llm import gpt_4o_mini_complete
+
             # Créer l'intercepteur LLM comme dans test_query_analysis.py
             intercepted_llm = graphrag_interceptor.intercept_query_processing(gpt_4o_mini_complete)
 
             local_graphrag = GraphRAG(
-                working_dir=GRAPHRAG_WORKING_DIR,
+                working_dir=book_data_path,
                 best_model_func=intercepted_llm,
                 cheap_model_func=intercepted_llm,
                 embedding_func_max_async=4,
@@ -94,14 +109,20 @@ def get_local_graphrag():
                 embedding_batch_num=16,
                 graph_cluster_algorithm="leiden"
             )
-            logger.info(f"✅ Local GraphRAG initialized with REAL INTERCEPTOR from: {GRAPHRAG_WORKING_DIR}")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize local GraphRAG: {e}")
-            local_graphrag = None
-    return local_graphrag
 
-# Import du nouvel intercepteur
+            gdrive_data_path = book_data_path
+            logger.info(f"✅ Local GraphRAG initialized with GDRIVE data from: {book_data_path}")
+
+        return local_graphrag
+
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize local GraphRAG with GDrive data: {e}")
+        return None
+
+# Import du nouvel intercepteur et du gestionnaire de données
 from graphrag_interceptor import graphrag_interceptor
+from gdrive_data_manager import gdrive_manager
+from endpoints.books import register_books_endpoints
 
 # GraphRAG Debug Interceptor (remplacé par le vrai intercepteur)
 class GraphRAGDebugInterceptor:
@@ -424,22 +445,28 @@ def get_graph_relationships():
 @app.route('/query/local', methods=['POST'])
 def query_local_graphrag():
     """
-    Endpoint pour tester le GraphRAG local avec vrai intercepteur
+    Endpoint pour tester le GraphRAG local avec vrai intercepteur et données GDrive
     Comme dans test_query_analysis.py
     """
     data = request.json
     query = data.get('query', '')
     mode = data.get('mode', 'local')
     debug_mode = data.get('debug_mode', True)
+    book_id = data.get('book_id', 'a_rebours_huysmans')
 
     if not query:
         return jsonify({'success': False, 'error': 'Query is required'}), 400
 
     try:
-        # Utiliser le GraphRAG local avec intercepteur
-        graphrag_instance = get_local_graphrag()
+        # Utiliser le GraphRAG local avec intercepteur et données GDrive
+        graphrag_instance = get_local_graphrag(book_id)
         if not graphrag_instance:
-            return jsonify({'success': False, 'error': 'Local GraphRAG not available'}), 500
+            available_books = gdrive_manager.list_available_books()
+            return jsonify({
+                'success': False,
+                'error': f'Local GraphRAG not available for book: {book_id}',
+                'available_books': available_books
+            }), 500
 
         logger.info(f"🔍 Running local GraphRAG with interceptor: '{query}'")
         start_time = time.time()
@@ -740,9 +767,20 @@ def cleanup(error):
 
 if __name__ == '__main__':
     try:
+        # Register book endpoints
+        register_books_endpoints(app)
+
         # Test connections on startup
         logger.info(f"Neo4j connection: {check_neo4j_connection()}")
         logger.info(f"GraphRAG connection: {check_graphrag_connection()}")
+
+        # Ensure GDrive data is available on startup
+        try:
+            gdrive_manager.ensure_data_available()
+            available_books = gdrive_manager.list_available_books()
+            logger.info(f"📚 Available books: {available_books}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not load GDrive data on startup: {e}")
 
         # Run the Flask app
         port = int(os.environ.get('PORT', 5002))
