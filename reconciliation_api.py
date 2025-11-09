@@ -91,11 +91,10 @@ def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
     try:
         # Ensure data is available from GDrive
         logger.info(f"📥 Ensuring GraphRAG data is available for book: {book_id}")
-        base_data_path = gdrive_manager.ensure_data_available()
-        book_data_path = gdrive_manager.get_book_data_path(book_id)
+        book_data_path = get_book_data_path(book_id)
 
         if not book_data_path:
-            available_books = gdrive_manager.list_available_books()
+            available_books = list_available_books()
             logger.error(f"❌ Book {book_id} not found. Available: {available_books}")
             return None
 
@@ -128,7 +127,7 @@ def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
 
 # Import du nouvel intercepteur et du gestionnaire de données
 from graphrag_interceptor import graphrag_interceptor
-from gdrive_data_manager import gdrive_manager
+# Using local book data functions defined above
 from endpoints.books import register_books_endpoints
 
 # GraphRAG Debug Interceptor (remplacé par le vrai intercepteur)
@@ -497,7 +496,7 @@ def query_local_graphrag():
         # Utiliser le GraphRAG local avec intercepteur et données GDrive
         graphrag_instance = get_local_graphrag(book_id)
         if not graphrag_instance:
-            available_books = gdrive_manager.list_available_books()
+            available_books = list_available_books()
             return jsonify({
                 'success': False,
                 'error': f'Local GraphRAG not available for book: {book_id}',
@@ -802,7 +801,7 @@ def query_multi_book():
     try:
         logger.info(f"🔍 Starting multi-book query: '{query}'")
 
-        available_books = gdrive_manager.list_available_books()
+        available_books = list_available_books()
         logger.info(f"📚 Available books: {available_books}")
 
         all_results = []
