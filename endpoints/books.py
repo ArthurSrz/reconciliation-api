@@ -68,7 +68,9 @@ def register_books_endpoints(app):
                         if entities_path.exists():
                             with open(entities_path, 'r', encoding='utf-8') as f:
                                 entities_data = json.load(f)
-                                if 'entities' in entities_data:
+                                if 'data' in entities_data:
+                                    entity_count = len(entities_data['data'])
+                                elif 'entities' in entities_data:
                                     entity_count = len(entities_data['entities'])
 
                         books_info.append({
