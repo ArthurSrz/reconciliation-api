@@ -60,7 +60,12 @@ def register_books_endpoints(app):
                         if full_docs_path.exists():
                             with open(full_docs_path, 'r', encoding='utf-8') as f:
                                 docs_data = json.load(f)
-                                doc_count = len(docs_data)
+                                if isinstance(docs_data, dict):
+                                    doc_count = len(docs_data)
+                                elif isinstance(docs_data, list):
+                                    doc_count = len(docs_data)
+                                else:
+                                    doc_count = 1
 
                         # Check for entities
                         entities_path = Path(book_path) / "vdb_entities.json"
