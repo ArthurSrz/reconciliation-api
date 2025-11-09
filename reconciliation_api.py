@@ -13,9 +13,9 @@ import os
 import logging
 import asyncio
 import httpx
+import json
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-import json
 import re
 import csv
 from nano_graphrag import GraphRAG, QueryParam
@@ -167,8 +167,25 @@ def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
                     graph_cluster_algorithm="leiden"
                 )
                 logger.info("✅ GraphRAG instance created successfully")
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ JSON parsing error in GraphRAG initialization: {e}")
+                logger.error(f"❌ This suggests corrupted files in production environment")
+                # Try to create GraphRAG without some problematic files
+                try:
+                    logger.info("🔄 Attempting GraphRAG creation with minimal config...")
+                    local_graphrag = GraphRAG(
+                        working_dir=book_data_path,
+                        best_model_func=intercepted_llm,
+                        cheap_model_func=intercepted_llm
+                    )
+                    logger.info("✅ GraphRAG instance created with minimal config")
+                except Exception as e2:
+                    logger.error(f"❌ Failed even with minimal config: {e2}")
+                    raise e
             except Exception as e:
                 logger.error(f"❌ Failed to create GraphRAG instance: {e}")
+                import traceback
+                logger.error(f"❌ Full traceback: {traceback.format_exc()}")
                 raise
 
             gdrive_data_path = book_data_path
