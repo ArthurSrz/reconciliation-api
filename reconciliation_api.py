@@ -78,6 +78,28 @@ def close_neo4j_driver():
         neo4j_driver.close()
         neo4j_driver = None
 
+# Local book data functions
+def get_book_data_path(book_id: str = "a_rebours_huysmans") -> str:
+    """Get path to local book data"""
+    book_path = Path("book_data") / book_id
+    if book_path.exists():
+        return str(book_path)
+    else:
+        raise FileNotFoundError(f"Book data not found: {book_id}")
+
+def list_available_books() -> list:
+    """List all available book datasets"""
+    book_data_dir = Path("book_data")
+    if not book_data_dir.exists():
+        return []
+
+    books = []
+    for item in book_data_dir.iterdir():
+        if item.is_dir() and (item / "vdb_entities.json").exists():
+            books.append(item.name)
+
+    return sorted(books)
+
 # Local GraphRAG Configuration with dynamic data loading
 GRAPHRAG_WORKING_DIR = os.getenv('GRAPHRAG_WORKING_DIR', None)  # Will be set dynamically
 local_graphrag = None
