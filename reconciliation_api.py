@@ -581,57 +581,34 @@ def query_reconciled():
         }), 400
 
     try:
-        # Query GraphRAG - try Railway API first, fallback to local
+        # Query local GraphRAG with book data
         graphrag_data = {}
         try:
-            # Try Railway GraphRAG API first
-            with httpx.Client() as client:
-                graphrag_payload = {
-                    'query': query,
-                    'mode': mode
-                }
-                if book_id:
-                    graphrag_payload['book_id'] = book_id
+            graphrag_instance = get_local_graphrag(book_id or "a_rebours_huysmans")
+            if graphrag_instance:
+                logger.info(f"🔍 Using local GraphRAG for query: '{query}' on book: {book_id}")
+                start_time = time.time()
+                result = graphrag_instance.query(query, param=QueryParam(mode=mode))
+                elapsed_time = time.time() - start_time
 
-                graphrag_response = client.post(
-                    f"{GRAPHRAG_API_URL}/query",
-                    json=graphrag_payload,
-                    timeout=30.0
-                )
-
-                if graphrag_response.status_code == 200:
-                    graphrag_data = graphrag_response.json()
-                    logger.info(f"✅ Railway GraphRAG response received: {len(graphrag_data.get('answer', ''))} chars")
-                else:
-                    raise Exception(f"Railway GraphRAG API error: {graphrag_response.status_code}")
-
-        except Exception as e:
-            logger.warning(f"Railway GraphRAG failed ({e}), falling back to local GraphRAG")
-            # Fallback to local GraphRAG
-            try:
-                graphrag_instance = get_local_graphrag(book_id or "a_rebours_huysmans")
-                if graphrag_instance:
-                    logger.info(f"🔍 Using local GraphRAG for query: '{query}'")
-                    start_time = time.time()
-                    result = graphrag_instance.query(query, param=QueryParam(mode=mode))
-                    elapsed_time = time.time() - start_time
-
-                    graphrag_data = {
-                        'answer': result,
-                        'mode': mode,
-                        'processing_time': elapsed_time,
-                        'source': 'local_graphrag'
-                    }
-                    logger.info(f"✅ Local GraphRAG response received: {len(result)} chars in {elapsed_time:.2f}s")
-                else:
-                    raise Exception("Local GraphRAG not available")
-            except Exception as local_e:
-                logger.error(f"Both Railway and local GraphRAG failed: {local_e}")
                 graphrag_data = {
-                    'answer': 'GraphRAG services temporarily unavailable',
+                    'answer': result,
                     'mode': mode,
-                    'source': 'fallback'
+                    'processing_time': elapsed_time,
+                    'source': 'local_graphrag',
+                    'book_id': book_id or "a_rebours_huysmans"
                 }
+                logger.info(f"✅ Local GraphRAG response received: {len(result)} chars in {elapsed_time:.2f}s")
+            else:
+                raise Exception("Local GraphRAG not available")
+        except Exception as e:
+            logger.error(f"Local GraphRAG failed: {e}")
+            graphrag_data = {
+                'answer': f'Error processing query: {str(e)}',
+                'mode': mode,
+                'source': 'error',
+                'book_id': book_id or "a_rebours_huysmans"
+            }
 
         result = {
             'success': True,
