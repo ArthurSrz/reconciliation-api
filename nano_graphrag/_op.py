@@ -875,11 +875,21 @@ async def _build_local_query_context(
     if not all([n is not None for n in node_datas]):
         logger.warning("Some nodes are missing, maybe the storage is damaged")
     node_degrees = await knowledge_graph_inst.node_degrees_batch([r["entity_name"] for r in results])
-    node_datas = [
-        {**n, "entity_name": k["entity_name"], "rank": d}
-        for k, n, d in zip(results, node_datas, node_degrees)
-        if n is not None
-    ]
+
+    # Build node_datas with additional safety checks
+    filtered_node_datas = []
+    for k, n, d in zip(results, node_datas, node_degrees):
+        if n is not None and isinstance(n, dict):
+            # Ensure entity_name is present and valid
+            entity_name = k.get("entity_name", "") if isinstance(k, dict) else ""
+            if entity_name:
+                try:
+                    filtered_node_datas.append({**n, "entity_name": entity_name, "rank": d or 0})
+                except Exception as e:
+                    logger.warning(f"Failed to process node data for {entity_name}: {e}")
+                    continue
+
+    node_datas = filtered_node_datas
     use_communities = await _find_most_related_community_from_entities(
         node_datas, query_param, community_reports, tokenizer_wrapper
     )
@@ -894,13 +904,18 @@ async def _build_local_query_context(
     )
     entites_section_list = [["id", "entity", "type", "description", "rank"]]
     for i, n in enumerate(node_datas):
+        # Additional safety checks for required fields
+        if n is None:
+            continue
+        entity_name = n.get("entity_name", f"UNKNOWN_ENTITY_{i}")
+        rank = n.get("rank", 0)
         entites_section_list.append(
             [
                 i,
-                n["entity_name"],
+                entity_name,
                 n.get("entity_type", "UNKNOWN"),
                 n.get("description", "UNKNOWN"),
-                n["rank"],
+                rank,
             ]
         )
     entities_context = list_of_list_to_csv(entites_section_list)
