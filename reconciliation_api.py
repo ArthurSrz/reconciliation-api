@@ -538,22 +538,18 @@ def query_local_graphrag():
 
 @app.route('/query/reconciled', methods=['POST'])
 @app.route('/graphrag/query', methods=['POST'])
+@app.route('/query', methods=['POST'])
 def query_reconciled():
     """
-    Reconciled query endpoint that:
-    1. Takes user query + visible node IDs from frontend
-    2. Fetches node details from Neo4j (source of truth)
-    3. Sends focused GraphRAG query based on visible nodes
-    4. Returns harmonized results
+    GraphRAG query endpoint
     """
     data = request.json
     query = data.get('query', '')
-    visible_node_ids = data.get('visible_node_ids', [])
     mode = data.get('mode', 'local')
     debug_mode = data.get('debug_mode', False)
-    book_id = data.get('book_id', None)  # Add book_id parameter
+    book_id = data.get('book_id', None)
 
-    logger.info(f"📝 Received reconciled query: '{query}' with {len(visible_node_ids)} visible nodes, mode: {mode}, book_id: {book_id}")
+    logger.info(f"📝 Received query: '{query}', mode: {mode}, book_id: {book_id}")
 
     if not query:
         return jsonify({
@@ -562,61 +558,15 @@ def query_reconciled():
         }), 400
 
     try:
-        # Step 1: Get node details from Neo4j for visible nodes (optional - fallback to GraphRAG only)
-        node_context = {}
-        if visible_node_ids:
-            try:
-                driver = get_neo4j_driver()
-                if driver:
-                    with driver.session() as session:
-                        query_neo4j = """
-                        MATCH (n)
-                        WHERE elementId(n) IN $node_ids
-                        RETURN n
-                        """
-                        result = session.run(query_neo4j, node_ids=visible_node_ids)
-
-                        for record in result:
-                            node = record['n']
-                            node_id = node.element_id
-                            node_context[node_id] = {
-                                'labels': list(node.labels),
-                                'properties': dict(node)
-                            }
-                    logger.info(f"✅ Retrieved {len(node_context)} node contexts from Neo4j")
-                else:
-                    logger.warning("Neo4j driver not available, proceeding with GraphRAG-only query")
-            except Exception as e:
-                logger.warning(f"Neo4j context failed, proceeding with GraphRAG-only query: {e}")
-                node_context = {}
-
-        # Step 2: Create context-aware query for GraphRAG
-        context_prefix = ""
-        if node_context:
-            # Build context from visible nodes
-            entities = []
-            for node_id, node_data in node_context.items():
-                label = node_data['labels'][0] if node_data['labels'] else 'Entity'
-                name = node_data['properties'].get('name', node_data['properties'].get('title', 'Unknown'))
-                entities.append(f"{name} ({label})")
-
-            context_prefix = f"Dans le contexte des entités suivantes visibles dans le graphe: {', '.join(entities[:10])}. "
-            logger.info(f"🎯 Enhanced query with {len(entities)} entities from visible nodes")
-
-        enhanced_query = context_prefix + query
-        logger.info(f"🔍 Sending to GraphRAG: {enhanced_query[:100]}...")
-
-        # Step 3: Query GraphRAG with context - try Railway API first, fallback to local
+        # Query GraphRAG - try Railway API first, fallback to local
         graphrag_data = {}
         try:
             # Try Railway GraphRAG API first
             with httpx.Client() as client:
-                # Build request payload
                 graphrag_payload = {
-                    'query': enhanced_query,
+                    'query': query,
                     'mode': mode
                 }
-                # Add book_id if provided
                 if book_id:
                     graphrag_payload['book_id'] = book_id
 
@@ -638,12 +588,11 @@ def query_reconciled():
             try:
                 graphrag_instance = get_local_graphrag(book_id or "a_rebours_huysmans")
                 if graphrag_instance:
-                    logger.info(f"🔍 Using local GraphRAG for query: '{enhanced_query}'")
+                    logger.info(f"🔍 Using local GraphRAG for query: '{query}'")
                     start_time = time.time()
-                    result = graphrag_instance.query(enhanced_query, param=QueryParam(mode=mode))
+                    result = graphrag_instance.query(query, param=QueryParam(mode=mode))
                     elapsed_time = time.time() - start_time
 
-                    # Format response to match Railway API format
                     graphrag_data = {
                         'answer': result,
                         'mode': mode,
@@ -661,14 +610,11 @@ def query_reconciled():
                     'source': 'fallback'
                 }
 
-        # Step 4: Reconcile results with Neo4j as source of truth
-        reconciled_result = {
+        result = {
             'success': True,
             'query': query,
             'answer': graphrag_data.get('answer', 'No answer available'),
             'context': {
-                'visible_nodes_count': len(visible_node_ids),
-                'node_context': list(node_context.keys())[:10],  # First 10 for response
                 'mode': mode
             },
             'search_path': graphrag_data.get('searchPath', {
@@ -679,35 +625,23 @@ def query_reconciled():
             'timestamp': datetime.utcnow().isoformat()
         }
 
-        # Add debug information if requested and available
+        # Add debug information if requested
         if debug_mode:
             try:
                 debug_info = graphrag_interceptor.get_real_debug_info()
-                reconciled_result['debug_info'] = debug_info
-                logger.info(f"Debug mode: captured REAL data - {debug_info['context_stats']['prompt_length']} chars, {len(debug_info['processing_phases']['entities'])} entities")
+                result['debug_info'] = debug_info
+                logger.info(f"Debug mode: captured REAL data")
             except Exception as e:
                 logger.warning(f"Debug info not available: {e}")
-                reconciled_result['debug_info'] = {
+                result['debug_info'] = {
                     'context_stats': {'mode': mode, 'source': graphrag_data.get('source', 'railway_api')},
                     'processing_phases': {}
                 }
 
-        # If there are conflicts, Neo4j data takes precedence
-        if 'searchPath' in graphrag_data and 'entities' in graphrag_data['searchPath']:
-            for entity in graphrag_data['searchPath']['entities']:
-                # Check if entity exists in our Neo4j context
-                entity_name = entity.get('id', '')
-                for node_id, node_data in node_context.items():
-                    if node_data['properties'].get('name') == entity_name:
-                        # Override with Neo4j data (source of truth)
-                        entity['source'] = 'neo4j'
-                        entity['verified'] = True
-                        break
-
-        return jsonify(reconciled_result)
+        return jsonify(result)
 
     except Exception as e:
-        logger.error(f"Error in reconciled query: {e}")
+        logger.error(f"Error in query: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
