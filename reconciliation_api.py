@@ -1065,10 +1065,11 @@ def cleanup(error):
     """Cleanup on app context teardown"""
     pass
 
+# Register book endpoints
+register_books_endpoints(app)
+
 if __name__ == '__main__':
     try:
-        # Register book endpoints
-        register_books_endpoints(app)
 
         # Test connections on startup
         logger.info(f"Neo4j connection: {check_neo4j_connection()}")
