@@ -713,6 +713,148 @@ def query_reconciled():
             'error': str(e)
         }), 500
 
+@app.route('/query/multi-book', methods=['POST'])
+def query_multi_book():
+    """
+    Query ALL books sequentially with GraphRAG
+    Returns aggregated results with per-book metadata
+    Like test_query_analysis.py but across multiple books
+    """
+    data = request.json
+    query = data.get('query', '')
+    mode = data.get('mode', 'local')
+    debug_mode = data.get('debug_mode', False)
+
+    if not query:
+        return jsonify({'success': False, 'error': 'Query is required'}), 400
+
+    try:
+        logger.info(f"🔍 Starting multi-book query: '{query}'")
+
+        available_books = gdrive_manager.list_available_books()
+        logger.info(f"📚 Available books: {available_books}")
+
+        all_results = []
+        aggregated_entities = {}
+        aggregated_relationships = {}
+        aggregated_communities = {}
+        total_processing_time = 0
+
+        for book_id in available_books:
+            logger.info(f"\n📖 Querying book: {book_id}")
+            book_start_time = time.time()
+
+            try:
+                graphrag_instance = get_local_graphrag(book_id)
+                if not graphrag_instance:
+                    logger.warning(f"⚠️ Could not initialize GraphRAG for {book_id}")
+                    continue
+
+                logger.info(f"🔍 Running GraphRAG query on {book_id}: '{query}'")
+                result = graphrag_instance.query(query, param=QueryParam(mode=mode))
+
+                book_processing_time = time.time() - book_start_time
+                total_processing_time += book_processing_time
+
+                debug_info = None
+                if debug_mode:
+                    debug_info = graphrag_interceptor.get_real_debug_info()
+
+                book_result = {
+                    'book_id': book_id,
+                    'answer': result,
+                    'processing_time': book_processing_time,
+                    'debug_info': debug_info
+                }
+
+                if debug_info:
+                    entities = debug_info.get('processing_phases', {}).get('entity_selection', {}).get('entities', [])
+                    relationships = debug_info.get('processing_phases', {}).get('relationship_mapping', {}).get('relationships', [])
+                    communities = debug_info.get('processing_phases', {}).get('community_analysis', {}).get('communities', [])
+
+                    for entity in entities:
+                        entity_id = entity.get('id')
+                        if entity_id not in aggregated_entities:
+                            aggregated_entities[entity_id] = {
+                                **entity,
+                                'books': [book_id],
+                                'found_in': [book_id]
+                            }
+                        else:
+                            if book_id not in aggregated_entities[entity_id]['books']:
+                                aggregated_entities[entity_id]['books'].append(book_id)
+                                aggregated_entities[entity_id]['found_in'].append(book_id)
+
+                    for rel in relationships:
+                        rel_key = f"{rel.get('source')}--{rel.get('target')}"
+                        if rel_key not in aggregated_relationships:
+                            aggregated_relationships[rel_key] = {
+                                **rel,
+                                'books': [book_id],
+                                'found_in': [book_id]
+                            }
+                        else:
+                            if book_id not in aggregated_relationships[rel_key]['books']:
+                                aggregated_relationships[rel_key]['books'].append(book_id)
+                                aggregated_relationships[rel_key]['found_in'].append(book_id)
+
+                    for comm in communities:
+                        comm_id = comm.get('id')
+                        if comm_id not in aggregated_communities:
+                            aggregated_communities[comm_id] = {
+                                **comm,
+                                'books': [book_id],
+                                'found_in': [book_id]
+                            }
+                        else:
+                            if book_id not in aggregated_communities[comm_id]['books']:
+                                aggregated_communities[comm_id]['books'].append(book_id)
+                                aggregated_communities[comm_id]['found_in'].append(book_id)
+
+                logger.info(f"✅ {book_id}: {len(entities)} entities, {len(relationships)} relationships, {len(communities)} communities in {book_processing_time:.2f}s")
+                all_results.append(book_result)
+
+            except Exception as book_error:
+                logger.error(f"❌ Error querying {book_id}: {book_error}")
+                all_results.append({
+                    'book_id': book_id,
+                    'error': str(book_error),
+                    'processing_time': time.time() - book_start_time
+                })
+
+        response = {
+            'success': True,
+            'query': query,
+            'mode': mode,
+            'total_processing_time': total_processing_time,
+            'books_queried': available_books,
+            'books_with_results': len([r for r in all_results if 'error' not in r]),
+            'book_results': all_results,
+            'aggregated': {
+                'entities': list(aggregated_entities.values()),
+                'relationships': list(aggregated_relationships.values()),
+                'communities': list(aggregated_communities.values())
+            },
+            'summary': {
+                'total_entities': len(aggregated_entities),
+                'total_relationships': len(aggregated_relationships),
+                'total_communities': len(aggregated_communities),
+                'entities_in_multiple_books': len([e for e in aggregated_entities.values() if len(e['books']) > 1]),
+                'relationships_in_multiple_books': len([r for r in aggregated_relationships.values() if len(r['books']) > 1])
+            },
+            'timestamp': datetime.utcnow().isoformat()
+        }
+
+        logger.info(f"✅ Multi-book query complete: {response['summary']}")
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Error in multi-book query: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/graph/search', methods=['GET'])
 def search_graph():
     """
