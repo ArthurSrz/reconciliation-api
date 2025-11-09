@@ -752,10 +752,25 @@ async def _find_most_related_text_unit_from_entities(
     knowledge_graph_inst: BaseGraphStorage,
     tokenizer_wrapper,
 ):
-    text_units = [
-        split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
-        for dp in node_datas
-    ]
+    # Handle missing source_id by getting it from graph storage
+    text_units = []
+    for dp in node_datas:
+        if "source_id" in dp:
+            text_units.append(split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP]))
+        else:
+            # Fallback: try to get source_id from graph storage
+            entity_name = dp.get("entity_name", "")
+            if entity_name:
+                try:
+                    graph_node_data = await knowledge_graph_inst.get_node(entity_name)
+                    if graph_node_data and "source_id" in graph_node_data:
+                        text_units.append(split_string_by_multi_markers(graph_node_data["source_id"], [GRAPH_FIELD_SEP]))
+                    else:
+                        text_units.append([])  # Empty list as fallback
+                except:
+                    text_units.append([])  # Empty list as fallback
+            else:
+                text_units.append([])  # Empty list as fallback
     edges = await knowledge_graph_inst.get_nodes_edges_batch([dp["entity_name"] for dp in node_datas])
     all_one_hop_nodes = set()
     for this_edges in edges:
@@ -764,11 +779,14 @@ async def _find_most_related_text_unit_from_entities(
         all_one_hop_nodes.update([e[1] for e in this_edges])
     all_one_hop_nodes = list(all_one_hop_nodes)
     all_one_hop_nodes_data = await knowledge_graph_inst.get_nodes_batch(all_one_hop_nodes)
-    all_one_hop_text_units_lookup = {
-        k: set(split_string_by_multi_markers(v["source_id"], [GRAPH_FIELD_SEP]))
-        for k, v in zip(all_one_hop_nodes, all_one_hop_nodes_data)
-        if v is not None
-    }
+    all_one_hop_text_units_lookup = {}
+    for k, v in zip(all_one_hop_nodes, all_one_hop_nodes_data):
+        if v is not None:
+            if "source_id" in v:
+                all_one_hop_text_units_lookup[k] = set(split_string_by_multi_markers(v["source_id"], [GRAPH_FIELD_SEP]))
+            else:
+                # Handle missing source_id - use empty set as fallback
+                all_one_hop_text_units_lookup[k] = set()
     all_text_units_lookup = {}
     for index, (this_text_units, this_edges) in enumerate(zip(text_units, edges)):
         for c_id in this_text_units:

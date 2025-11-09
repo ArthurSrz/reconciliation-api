@@ -829,6 +829,11 @@ def query_multi_book():
                 if debug_mode:
                     debug_info = graphrag_interceptor.get_real_debug_info()
 
+                # Initialize empty lists for tracking
+                entities = []
+                relationships = []
+                communities = []
+
                 book_result = {
                     'book_id': book_id,
                     'answer': result,
