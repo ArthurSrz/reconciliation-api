@@ -1076,13 +1076,12 @@ if __name__ == '__main__':
         logger.info(f"Neo4j connection: {check_neo4j_connection()}")
         logger.info(f"GraphRAG connection: {check_graphrag_connection()}")
 
-        # Ensure GDrive data is available on startup
+        # List available books on startup
         try:
-            gdrive_manager.ensure_data_available()
-            available_books = gdrive_manager.list_available_books()
+            available_books = list_available_books()
             logger.info(f"📚 Available books: {available_books}")
         except Exception as e:
-            logger.warning(f"⚠️ Could not load GDrive data on startup: {e}")
+            logger.warning(f"⚠️ Could not list books on startup: {e}")
 
         # Run the Flask app
         port = int(os.environ.get('PORT', 5002))
