@@ -4,10 +4,33 @@ Handles book data management and listing
 """
 
 from flask import jsonify, request
-from gdrive_data_manager import gdrive_manager
 import logging
+from pathlib import Path
+import json
 
 logger = logging.getLogger(__name__)
+
+# Local book data functions
+def get_book_data_path(book_id: str) -> str:
+    """Get path to local book data"""
+    book_path = Path("book_data") / book_id
+    if book_path.exists():
+        return str(book_path)
+    else:
+        raise FileNotFoundError(f"Book data not found: {book_id}")
+
+def list_available_books() -> list:
+    """List all available book datasets"""
+    book_data_dir = Path("book_data")
+    if not book_data_dir.exists():
+        return []
+
+    books = []
+    for item in book_data_dir.iterdir():
+        if item.is_dir() and (item / "vdb_entities.json").exists():
+            books.append(item.name)
+
+    return sorted(books)
 
 def register_books_endpoints(app):
     """Register book-related endpoints"""
@@ -18,16 +41,13 @@ def register_books_endpoints(app):
         Get list of available books in the GraphRAG dataset
         """
         try:
-            # Ensure data is available
-            gdrive_manager.ensure_data_available()
-
-            # Get list of available books
-            available_books = gdrive_manager.list_available_books()
+            # Get list of available books from local data
+            available_books = list_available_books()
 
             # Get detailed info for each book
             books_info = []
             for book_id in available_books:
-                book_path = gdrive_manager.get_book_data_path(book_id)
+                book_path = get_book_data_path(book_id)
                 if book_path:
                     # Try to get some metadata about the book
                     try:
@@ -89,7 +109,7 @@ def register_books_endpoints(app):
         Get detailed information about a specific book
         """
         try:
-            book_path = gdrive_manager.get_book_data_path(book_id)
+            book_path = get_book_data_path(book_id)
             if not book_path:
                 return jsonify({
                     'success': False,
@@ -160,22 +180,18 @@ def register_books_endpoints(app):
     @app.route('/data/refresh', methods=['POST'])
     def refresh_data():
         """
-        Force refresh of data from Google Drive
+        Force refresh of data from local book data
         """
         try:
-            logger.info("🔄 Forcing data refresh from Google Drive...")
+            logger.info("🔄 Refreshing local book data...")
 
-            # Clean up old data
-            gdrive_manager.cleanup_old_data()
-
-            # Download fresh data
-            data_path = gdrive_manager.ensure_data_available()
-            available_books = gdrive_manager.list_available_books()
+            # Get fresh list of available books
+            available_books = list_available_books()
 
             return jsonify({
                 'success': True,
-                'message': 'Data refreshed successfully',
-                'data_path': data_path,
+                'message': 'Local book data refreshed successfully',
+                'data_path': 'book_data',
                 'available_books': available_books,
                 'book_count': len(available_books)
             })
