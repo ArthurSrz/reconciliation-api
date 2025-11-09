@@ -23,6 +23,8 @@ from io import StringIO
 from functools import wraps
 import time
 from dotenv import load_dotenv
+from pathlib import Path
+import networkx as nx
 
 # Load environment variables from .env file
 load_dotenv()
@@ -642,6 +644,141 @@ def query_reconciled():
 
     except Exception as e:
         logger.error(f"Error in query: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/graph/search-nodes', methods=['POST'])
+def search_nodes_from_graphrag():
+    """
+    Extract and display nodes from GraphRAG based on query
+    Returns entities, relationships, and communities like test_dickens_community
+    """
+    data = request.json
+    query = data.get('query', '')
+    mode = data.get('mode', 'local')
+    book_id = data.get('book_id', None)
+
+    logger.info(f"🔍 Searching nodes from GraphRAG for: '{query}'")
+
+    if not query:
+        return jsonify({
+            'success': False,
+            'error': 'Query is required'
+        }), 400
+
+    try:
+        # Get GraphRAG instance
+        graphrag_instance = get_local_graphrag(book_id or "a_rebours_huysmans")
+        if not graphrag_instance:
+            raise Exception("GraphRAG not available")
+
+        logger.info(f"🔍 Running GraphRAG query to extract entities: '{query}'")
+
+        # Run query to trigger entity/relationship extraction
+        start_time = time.time()
+        result = graphrag_instance.query(query, param=QueryParam(mode=mode))
+        elapsed_time = time.time() - start_time
+
+        logger.info(f"✅ Query completed in {elapsed_time:.2f}s")
+
+        # Now extract entities and relationships from the index
+        # Access the graph structure to get nodes
+        try:
+            # Get the storage manager
+            from nano_graphrag._storage import get_storage_class
+            storage_class = get_storage_class("networkx")
+
+            # Try to load the graph
+            graph_path = Path(graphrag_instance.working_dir) / "graph_chunk_entity_relation.graphml"
+
+            if graph_path.exists():
+                logger.info(f"📊 Loading graph from: {graph_path}")
+                G = nx.read_graphml(str(graph_path))
+
+                # Extract nodes with attributes
+                nodes = []
+                relationships = []
+                communities = set()
+
+                for node_id, node_data in G.nodes(data=True):
+                    node_obj = {
+                        'id': node_id,
+                        'labels': [node_data.get('entity_type', 'Entity')],
+                        'properties': {
+                            'name': node_data.get('entity_name', node_id),
+                            'description': node_data.get('description', ''),
+                        },
+                        'degree': G.degree(node_id),
+                        'centrality_score': G.degree(node_id)
+                    }
+                    nodes.append(node_obj)
+
+                # Extract relationships
+                for source, target, edge_data in G.edges(data=True):
+                    rel_obj = {
+                        'id': f"{source}_{target}",
+                        'type': edge_data.get('weight_label', 'RELATED'),
+                        'source': source,
+                        'target': target,
+                        'properties': {
+                            'description': edge_data.get('weight_label', 'Related to'),
+                            'weight': float(edge_data.get('weight', 1.0))
+                        }
+                    }
+                    relationships.append(rel_obj)
+
+                logger.info(f"✅ Extracted {len(nodes)} nodes and {len(relationships)} relationships")
+
+                return jsonify({
+                    'success': True,
+                    'query': query,
+                    'answer': result,
+                    'nodes': nodes[:500],  # Limit to 500 nodes for performance
+                    'relationships': relationships[:5000],  # Limit relationships
+                    'graph': {
+                        'total_nodes': len(nodes),
+                        'total_relationships': len(relationships),
+                        'node_types': list(set([node['labels'][0] for node in nodes]))
+                    },
+                    'processing_time': elapsed_time,
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+            else:
+                # Fallback: return answer without graph
+                logger.warning(f"Graph file not found at {graph_path}, returning answer only")
+                return jsonify({
+                    'success': True,
+                    'query': query,
+                    'answer': result,
+                    'nodes': [],
+                    'relationships': [],
+                    'graph': {
+                        'total_nodes': 0,
+                        'total_relationships': 0,
+                        'note': 'Graph file not available yet'
+                    },
+                    'processing_time': elapsed_time,
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+
+        except Exception as graph_e:
+            logger.warning(f"Could not extract graph data: {graph_e}")
+            # Return at least the answer
+            return jsonify({
+                'success': True,
+                'query': query,
+                'answer': result,
+                'nodes': [],
+                'relationships': [],
+                'error': 'Graph extraction failed, but answer provided',
+                'processing_time': elapsed_time,
+                'timestamp': datetime.utcnow().isoformat()
+            })
+
+    except Exception as e:
+        logger.error(f"Error searching nodes: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
