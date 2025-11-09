@@ -1,7 +1,9 @@
 FROM python:3.11-slim
 
+WORKDIR /app
+
 # Install system dependencies for compilation
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     g++ \
@@ -10,15 +12,12 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
-WORKDIR /app
-
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies with more memory and better caching
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
@@ -28,10 +27,7 @@ RUN chmod +x entrypoint.sh
 
 # Set environment variables
 ENV PYTHONPATH=/app:/app/nano_graphrag
+ENV PYTHONUNBUFFERED=1
 
-# Health check - disable for now due to PORT variable issues
-# HEALTHCHECK --interval=30s --timeout=30s --start-period=40s --retries=3 \
-#     CMD curl -f http://localhost:8080/health || exit 1
-
-# Run the application using entrypoint script
+# Run the application
 CMD ["./entrypoint.sh"]
