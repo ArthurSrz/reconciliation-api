@@ -367,16 +367,35 @@ def get_graph_nodes():
             'error': str(e)
         }), 500
 
-@app.route('/graph/relationships', methods=['GET'])
+@app.route('/graph/relationships', methods=['GET', 'POST'])
 def get_graph_relationships():
     """
     Get relationships for the displayed nodes
-    Query params:
-    - node_ids: comma-separated list of node IDs
+
+    GET Query params:
+    - node_ids: comma-separated list of node IDs (for small requests only)
     - limit: max number of relationships to return (default 10000)
+
+    POST Body:
+    - node_ids: list of node IDs (array or comma-separated string)
+    - limit: max number of relationships to return (default 10000)
+
+    Note: Use POST for large requests (>100 nodes) to avoid HTTP header size limits
     """
-    node_ids = request.args.get('node_ids', '').split(',')
-    limit = min(int(request.args.get('limit', 10000)), 50000)  # Cap at 50k relationships
+    # Get parameters from GET or POST
+    if request.method == 'POST':
+        data = request.get_json() or {}
+        node_ids_param = data.get('node_ids', '')
+        limit = min(int(data.get('limit', 10000)), 50000)
+
+        # Handle both string and array formats
+        if isinstance(node_ids_param, list):
+            node_ids = node_ids_param
+        else:
+            node_ids = node_ids_param.split(',') if node_ids_param else []
+    else:
+        node_ids = request.args.get('node_ids', '').split(',')
+        limit = min(int(request.args.get('limit', 10000)), 50000)
 
     if not node_ids or node_ids == ['']:
         return jsonify({
@@ -393,7 +412,7 @@ def get_graph_relationships():
             'error': 'No valid node IDs provided'
         }), 400
 
-    logger.info(f"Fetching relationships for {len(node_ids)} nodes with limit {limit}")
+    logger.info(f"Fetching relationships for {len(node_ids)} nodes with limit {limit} (method: {request.method})")
 
     try:
         driver = get_neo4j_driver()
