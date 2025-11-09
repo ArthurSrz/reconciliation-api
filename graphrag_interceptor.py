@@ -109,11 +109,17 @@ class GraphRAGQueryInterceptor:
 
             logger.info(f"🎯 Intercepting _build_local_query_context for query: '{query}'")
 
-            # Import nano-graphrag logger
+            # Import nano-graphrag logger with error handling
             import nano_graphrag
 
-            # Store the original logger.info method
-            original_logger_info = nano_graphrag.logger.info
+            # Try to access the logger, fallback if not available
+            try:
+                original_logger_info = nano_graphrag.logger.info
+                has_logger = True
+            except AttributeError:
+                logger.warning("nano_graphrag.logger not available, using fallback mode")
+                original_logger_info = None
+                has_logger = False
 
             # Variables to capture the data
             captured_entities_count = 0
@@ -151,8 +157,9 @@ class GraphRAGQueryInterceptor:
                 # Call original logger
                 return original_logger_info(message, *args, **kwargs)
 
-            # Monkey patch the logger
-            nano_graphrag.logger.info = patched_logger_info
+            # Monkey patch the logger if available
+            if has_logger and original_logger_info:
+                nano_graphrag.logger.info = patched_logger_info
 
             try:
                 # Call the original function
@@ -185,8 +192,9 @@ class GraphRAGQueryInterceptor:
                     logger.warning("❌ No entity counts captured - using fallback")
 
             finally:
-                # Restore original logger
-                nano_graphrag.logger.info = original_logger_info
+                # Restore original logger if available
+                if has_logger and original_logger_info:
+                    nano_graphrag.logger.info = original_logger_info
 
             return result
 
