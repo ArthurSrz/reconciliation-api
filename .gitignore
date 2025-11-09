@@ -39,12 +39,7 @@ dist/
 build/
 *.egg-info/
 
-# Data files (should be downloaded from GDrive)
+# Old data files (no longer used)
 gdrive_correct_data/
-a_rebours_huysmans/
 book_data.zip
 gdrive_data/
-# Only ignore data JSON files, not config files
-**/kv_store_*.json
-**/vdb_entities.json
-*.graphml
