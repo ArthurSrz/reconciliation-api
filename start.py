@@ -22,14 +22,29 @@ def ensure_book_data():
         if books:
             logger.info(f"✅ Book data already available: {books}")
             return
+        else:
+            logger.info("📁 book_data directory exists but empty, downloading...")
+    else:
+        logger.info("📥 book_data directory not found, downloading...")
 
-    # Download book data
-    logger.info("📥 Book data not found, downloading...")
+    # Always try to download book data
     try:
+        logger.info("🔄 Downloading book data from Google Drive...")
         from download_book_data import download_book_data
         download_book_data()
+
+        # Verify download worked
+        if book_data_dir.exists():
+            books = [item.name for item in book_data_dir.iterdir()
+                    if item.is_dir() and (item / "vdb_entities.json").exists()]
+            logger.info(f"✅ Download successful! Available books: {books}")
+        else:
+            logger.error("❌ Download failed - no book_data directory created")
+
     except Exception as e:
         logger.error(f"❌ Failed to download book data: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         # Continue anyway - app might work with fallback
 
 def start_app():
