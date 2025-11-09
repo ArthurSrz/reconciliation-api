@@ -454,6 +454,8 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
 
                 node_obj = {
                     'id': clean_quotes(str(node_id)),
+                    'label': clean_quotes(node_name),  # Frontend expects 'label' field
+                    'type': clean_quotes(node_data.get('entity_type', 'Entity')),  # Frontend expects 'type' field
                     'labels': [clean_quotes(node_data.get('entity_type', 'Entity'))],
                     'properties': {
                         'name': clean_quotes(node_name),
@@ -951,6 +953,8 @@ def search_nodes_from_graphrag():
                 for node_id, node_data in G.nodes(data=True):
                     node_obj = {
                         'id': node_id,
+                        'label': node_data.get('entity_name', node_id),  # Frontend expects 'label' field
+                        'type': node_data.get('entity_type', 'Entity'),  # Frontend expects 'type' field
                         'labels': [node_data.get('entity_type', 'Entity')],
                         'properties': {
                             'name': node_data.get('entity_name', node_id),
