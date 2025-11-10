@@ -42,4 +42,4 @@ build/
 # Old data files (no longer used)
 gdrive_correct_data/
 book_data.zip
-gdrive_data/
+gdrive_data/book_data_working.tar.gz

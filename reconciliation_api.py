@@ -1409,6 +1409,47 @@ def get_stats():
             'error': str(e)
         }), 500
 
+@app.route('/data/upload-local', methods=['POST'])
+def upload_local_data():
+    """
+    Upload local book data to Railway volume (development helper)
+    """
+    try:
+        # Only work if we have a Railway volume
+        volume_path = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH')
+        if not volume_path:
+            return jsonify({
+                'success': False,
+                'error': 'No Railway volume detected - this endpoint only works on Railway'
+            }), 400
+
+        logger.info("📤 Uploading local book data to Railway volume...")
+
+        # Trigger the book data download function we already have
+        success = ensure_book_data_available()
+
+        if success:
+            available_books = list_available_books()
+            return jsonify({
+                'success': True,
+                'message': f'Book data uploaded successfully to {volume_path}',
+                'volume_path': volume_path,
+                'available_books': available_books,
+                'book_count': len(available_books)
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to upload book data'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Error uploading local data: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.teardown_appcontext
 def cleanup(error):
     """Cleanup on app context teardown"""
