@@ -7,13 +7,25 @@ from flask import jsonify, request
 import logging
 from pathlib import Path
 import json
+import os
 
 logger = logging.getLogger(__name__)
 
-# Local book data functions
+# Local book data functions with Railway volume support
+def get_book_data_base_path():
+    """Get the base path for book data - Railway volume or local directory"""
+    # On Railway with volume mounted
+    if volume_path := os.environ.get('RAILWAY_VOLUME_MOUNT_PATH'):
+        logger.info(f"📂 Using Railway volume path: {volume_path}")
+        return volume_path
+    # Local development
+    logger.info("📂 Using local book_data directory")
+    return "book_data"
+
 def get_book_data_path(book_id: str) -> str:
     """Get path to local book data"""
-    book_path = Path("book_data") / book_id
+    base_path = get_book_data_base_path()
+    book_path = Path(base_path) / book_id
     if book_path.exists():
         return str(book_path)
     else:
@@ -21,7 +33,7 @@ def get_book_data_path(book_id: str) -> str:
 
 def list_available_books() -> list:
     """List all available book datasets"""
-    book_data_dir = Path("book_data")
+    book_data_dir = Path(get_book_data_base_path())
     if not book_data_dir.exists():
         return []
 

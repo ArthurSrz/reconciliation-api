@@ -53,6 +53,60 @@ NEO4J_USER = os.getenv('NEO4J_USER', 'neo4j')
 NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', 'password')
 GRAPHRAG_API_URL = os.getenv('GRAPHRAG_API_URL', 'https://borgesgraph-production.up.railway.app')
 
+def get_book_data_base_path():
+    """Get the base path for book data - Railway volume or local directory"""
+    # On Railway with volume mounted
+    if volume_path := os.environ.get('RAILWAY_VOLUME_MOUNT_PATH'):
+        logger.info(f"📂 Using Railway volume path: {volume_path}")
+        return volume_path
+    # Local development
+    logger.info("📂 Using local book_data directory")
+    return "book_data"
+
+def get_book_data_path(book_id: str) -> str:
+    """Get the full path to a specific book's data directory"""
+    base_path = get_book_data_base_path()
+    book_path = os.path.join(base_path, book_id)
+    return book_path
+
+def ensure_book_data_available():
+    """Ensure book data is available - download from Google Drive if Railway volume is empty"""
+    base_path = get_book_data_base_path()
+    base_dir = Path(base_path)
+
+    # Check if we have any book data
+    if base_dir.exists() and any(base_dir.iterdir()):
+        logger.info(f"📚 Book data already exists in {base_path}")
+        return True
+
+    # If we're on Railway and have Google Drive ID, download data
+    if os.environ.get('RAILWAY_VOLUME_MOUNT_PATH') and os.environ.get('BOOK_DATA_DRIVE_ID'):
+        logger.info("🔄 Railway volume empty, downloading book data from Google Drive...")
+        try:
+            # Change to base path for download
+            original_cwd = os.getcwd()
+            os.chdir(base_path)
+
+            # Import and run the download script
+            from book_data.download_data import download_and_extract_data
+            success = download_and_extract_data()
+
+            os.chdir(original_cwd)
+
+            if success:
+                logger.info("✅ Book data downloaded successfully to Railway volume")
+                return True
+            else:
+                logger.warning("⚠️ Book data download failed, continuing with empty volume")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ Error downloading book data: {e}")
+            return False
+
+    logger.info("📂 No automatic download configured")
+    return False
+
 # Neo4j driver instance
 neo4j_driver = None
 
@@ -79,9 +133,10 @@ def close_neo4j_driver():
         neo4j_driver = None
 
 # Local book data functions
-def get_book_data_path(book_id: str = "a_rebours_huysmans") -> str:
-    """Get path to local book data"""
-    book_path = Path("book_data") / book_id
+def get_book_data_path_legacy(book_id: str = "a_rebours_huysmans") -> str:
+    """Legacy function - use get_book_data_path instead"""
+    base_path = get_book_data_base_path()
+    book_path = Path(base_path) / book_id
     if book_path.exists():
         return str(book_path)
     else:
@@ -89,7 +144,7 @@ def get_book_data_path(book_id: str = "a_rebours_huysmans") -> str:
 
 def list_available_books() -> list:
     """List all available book datasets"""
-    book_data_dir = Path("book_data")
+    book_data_dir = Path(get_book_data_base_path())
     if not book_data_dir.exists():
         return []
 
@@ -1364,6 +1419,8 @@ register_books_endpoints(app)
 
 if __name__ == '__main__':
     try:
+        # Ensure book data is available (download from Google Drive if needed)
+        ensure_book_data_available()
 
         # Test connections on startup
         logger.info(f"Neo4j connection: {check_neo4j_connection()}")
