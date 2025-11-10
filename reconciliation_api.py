@@ -70,7 +70,7 @@ def get_book_data_path(book_id: str) -> str:
     return book_path
 
 def ensure_book_data_available():
-    """Ensure book data is available - download from Google Drive if Railway volume is empty"""
+    """Check if book data is available in current path"""
     base_path = get_book_data_base_path()
     base_dir = Path(base_path)
 
@@ -79,71 +79,41 @@ def ensure_book_data_available():
         logger.info(f"📚 Book data already exists in {base_path}")
         return True
 
-    # If we're on Railway and have Google Drive ID, download data
-    if os.environ.get('RAILWAY_VOLUME_MOUNT_PATH') and os.environ.get('BOOK_DATA_DRIVE_ID'):
-        logger.info("🔄 Railway volume empty, downloading book data from Google Drive...")
-        try:
-            # Change to base path for download
-            original_cwd = os.getcwd()
-            os.chdir(base_path)
-
-            # Import and run the download script
-            from book_data.download_data import download_and_extract_data
-            success = download_and_extract_data()
-
-            os.chdir(original_cwd)
-
-            if success:
-                logger.info("✅ Book data downloaded successfully to Railway volume")
-                return True
-            else:
-                logger.warning("⚠️ Book data download failed, continuing with empty volume")
-                return False
-
-        except Exception as e:
-            logger.error(f"❌ Error downloading book data: {e}")
-            return False
-
-    logger.info("📂 No automatic download configured")
+    logger.info("📂 No book data found")
     return False
 
-def copy_local_data_to_volume():
-    """Copy local book data directory to Railway volume"""
+def create_sample_book_data():
+    """Create sample book data in the volume for testing"""
     volume_path = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH')
     if not volume_path:
         logger.error("No Railway volume path found")
         return False
 
-    local_book_data = "book_data"
-    if not Path(local_book_data).exists():
-        logger.error(f"Local book data directory not found: {local_book_data}")
-        return False
-
     try:
-        import shutil
+        import json
         volume_dir = Path(volume_path)
         volume_dir.mkdir(exist_ok=True)
 
-        logger.info(f"📤 Copying book data from {local_book_data} to {volume_path}")
+        # Create a sample book directory
+        sample_book = volume_dir / "test_book"
+        sample_book.mkdir(exist_ok=True)
 
-        # Copy each book directory
-        local_dir = Path(local_book_data)
-        copied_books = []
+        # Create a minimal vdb_entities.json file
+        sample_entities = {
+            "data": [
+                {"id": "test_entity_1", "content": "This is a test entity"},
+                {"id": "test_entity_2", "content": "This is another test entity"}
+            ]
+        }
 
-        for item in local_dir.iterdir():
-            if item.is_dir() and not item.name.startswith('.'):
-                dest_path = volume_dir / item.name
-                if dest_path.exists():
-                    shutil.rmtree(dest_path)  # Remove existing
-                shutil.copytree(item, dest_path)
-                copied_books.append(item.name)
-                logger.info(f"✅ Copied book: {item.name}")
+        with open(sample_book / "vdb_entities.json", 'w') as f:
+            json.dump(sample_entities, f)
 
-        logger.info(f"📚 Successfully copied {len(copied_books)} books to volume")
+        logger.info("📚 Created sample book data in volume")
         return True
 
     except Exception as e:
-        logger.error(f"❌ Error copying data to volume: {e}")
+        logger.error(f"❌ Error creating sample data: {e}")
         return False
 
 # Neo4j driver instance
@@ -197,15 +167,15 @@ def list_available_books() -> list:
 # Local GraphRAG Configuration with dynamic data loading
 GRAPHRAG_WORKING_DIR = os.getenv('GRAPHRAG_WORKING_DIR', None)  # Will be set dynamically
 local_graphrag = None
-gdrive_data_path = None
+book_data_path = None
 
 def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
-    """Get or create local GraphRAG instance with real interceptor and GDrive data"""
-    global local_graphrag, gdrive_data_path
+    """Get or create local GraphRAG instance with real interceptor and book data"""
+    global local_graphrag, book_data_path
 
     # Always ensure we have fresh data for the requested book
     try:
-        # Ensure data is available from GDrive
+        # Ensure data is available
         logger.info(f"📥 Ensuring GraphRAG data is available for book: {book_id}")
         book_data_path = get_book_data_path(book_id)
 
@@ -214,8 +184,8 @@ def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
             logger.error(f"❌ Book {book_id} not found. Available: {available_books}")
             return None
 
-        # Only recreate GraphRAG if path changed or doesn't exist
-        if local_graphrag is None or gdrive_data_path != book_data_path:
+        # Only recreate GraphRAG if it doesn't exist
+        if local_graphrag is None:
             logger.info(f"🔧 Creating new GraphRAG instance for path: {book_data_path}")
 
             try:
@@ -282,13 +252,12 @@ def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
                 logger.error(f"❌ Full traceback: {traceback.format_exc()}")
                 raise
 
-            gdrive_data_path = book_data_path
-            logger.info(f"✅ Local GraphRAG initialized with GDRIVE data from: {book_data_path}")
+            logger.info(f"✅ Local GraphRAG initialized with book data from: {book_data_path}")
 
         return local_graphrag
 
     except Exception as e:
-        logger.error(f"❌ Failed to initialize local GraphRAG with GDrive data: {e}")
+        logger.error(f"❌ Failed to initialize local GraphRAG with book data: {e}")
         return None
 
 # Import du nouvel intercepteur et du gestionnaire de données
@@ -866,7 +835,7 @@ def get_graph_relationships():
 @app.route('/query/local', methods=['POST'])
 def query_local_graphrag():
     """
-    Endpoint pour tester le GraphRAG local avec vrai intercepteur et données GDrive
+    Endpoint pour tester le GraphRAG local avec vrai intercepteur et données de livres
     Comme dans test_query_analysis.py
     """
     data = request.json
@@ -879,7 +848,7 @@ def query_local_graphrag():
         return jsonify({'success': False, 'error': 'Query is required'}), 400
 
     try:
-        # Utiliser le GraphRAG local avec intercepteur et données GDrive
+        # Utiliser le GraphRAG local avec intercepteur et données de livres
         graphrag_instance = get_local_graphrag(book_id)
         if not graphrag_instance:
             available_books = list_available_books()
@@ -1464,20 +1433,8 @@ def upload_local_data():
 
         logger.info("📤 Uploading local book data to Railway volume...")
 
-        # Force download from Google Drive to populate volume
-        # First, clear any existing data to force fresh download
-        volume_dir = Path(volume_path)
-        if volume_dir.exists() and any(volume_dir.iterdir()):
-            logger.info("🗑️ Clearing existing volume data to force fresh download")
-            import shutil
-            for item in volume_dir.iterdir():
-                if item.is_dir():
-                    shutil.rmtree(item)
-                elif item.is_file():
-                    item.unlink()
-
-        # Now trigger download
-        success = ensure_book_data_available()
+        # Create sample book data for testing
+        success = create_sample_book_data()
 
         if success:
             available_books = list_available_books()
@@ -1512,7 +1469,7 @@ def debug_env():
 
         return jsonify({
             'railway_volume_path': volume_path,
-            'book_data_drive_id': os.environ.get('BOOK_DATA_DRIVE_ID'),
+            'volume_mount_path': os.environ.get('RAILWAY_VOLUME_MOUNT_PATH'),
             'base_path': get_book_data_base_path(),
             'volume_exists': Path(volume_path).exists() if volume_path else False,
             'volume_contents': volume_contents
@@ -1532,7 +1489,7 @@ register_books_endpoints(app)
 
 if __name__ == '__main__':
     try:
-        # Ensure book data is available (download from Google Drive if needed)
+        # Ensure book data is available
         ensure_book_data_available()
 
         # Test connections on startup
