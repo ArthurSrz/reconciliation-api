@@ -100,7 +100,7 @@ class GraphRAGQueryInterceptor:
         return wrapper
 
     def intercept_build_local_query_context(self, original_func):
-        """Intercept using Python logging handler to capture nano-graphrag messages"""
+        """Intercept and capture REAL entity data from nano-graphrag processing"""
 
         @wraps(original_func)
         async def wrapper(*args, **kwargs):
@@ -109,81 +109,94 @@ class GraphRAGQueryInterceptor:
 
             logger.info(f"🎯 Intercepting _build_local_query_context for query: '{query}'")
 
-            # Use Python logging handler to capture nano-graphrag log messages
-            import logging
+            # Variables to store real data
+            real_entities = []
+            real_communities = []
+            real_relations = []
 
-            # Get the nano-graphrag logger by name
-            nano_logger = logging.getLogger('nano-graphrag')
+            # We'll capture the data from the original function result
+            # Since _build_local_query_context processes the real data internally
 
-            # Variables to capture the data
-            captured_entities_count = 0
-            captured_communities_count = 0
-            captured_relations_count = 0
-            captured_text_units_count = 0
+            # Monkey-patch nano-graphrag to capture real data during processing
+            import nano_graphrag._op as nano_op
 
-            # Create a custom logging handler to capture the message
-            class EntityCountHandler(logging.Handler):
-                def __init__(self):
-                    super().__init__()
-                    self.captured_entities_count = 0
-                    self.captured_communities_count = 0
-                    self.captured_relations_count = 0
-                    self.captured_text_units_count = 0
+            # Store the original logger.info function
+            original_logger_info = nano_op.logger.info
 
-                def emit(self, record):
-                    message = record.getMessage()
-                    # Check if this is the message we're looking for
-                    # Note: nano-graphrag source has typo "entites" instead of "entities" at line 903 in _op.py
-                    if "Using" in message and "entites" in message:
-                        # Debug: log the raw message being processed
-                        logger.debug(f"📝 Processing nano-graphrag message: {message[:200]}...")
-                        try:
-                            # Parse the message: "Using 20 entites, 5 communities, 75 relations, 3 text units"
-                            # Note: Pattern matches nano-graphrag's actual typo "entites" (not "entities")
-                            import re
-                            pattern = r'Using (\d+) entites, (\d+) communities, (\d+) relations, (\d+) text units'
-                            match = re.search(pattern, message)
-                            if match:
-                                self.captured_entities_count = int(match.group(1))
-                                self.captured_communities_count = int(match.group(2))
-                                self.captured_relations_count = int(match.group(3))
-                                self.captured_text_units_count = int(match.group(4))
+            def patched_logger_info(message, *args, **kwargs):
+                """Patched logger that captures both log message and processes real data"""
+                nonlocal real_entities, real_communities, real_relations
 
-                                logger.info(f"🎯 CAPTURED COUNTS from nano-graphrag log:")
-                                logger.info(f"   - Entities: {self.captured_entities_count}")
-                                logger.info(f"   - Communities: {self.captured_communities_count}")
-                                logger.info(f"   - Relations: {self.captured_relations_count}")
-                                logger.info(f"   - Text units: {self.captured_text_units_count}")
-                            else:
-                                logger.warning(f"⚠️ Could not parse message: {message}")
-                        except Exception as e:
-                            logger.error(f"❌ Error parsing nano-graphrag log: {e}")
+                # Check if this is the "Using X entities..." message
+                if "Using" in str(message) and "entites" in str(message):
+                    try:
+                        # This log happens AFTER node_datas, use_communities, use_relations are processed
+                        # We can access them from the current frame
+                        import inspect
+                        frame = inspect.currentframe()
 
-            # Create and add the handler
-            entity_handler = EntityCountHandler()
-            nano_logger.addHandler(entity_handler)
-            original_level = nano_logger.level
-            nano_logger.setLevel(logging.INFO)  # Ensure INFO messages are captured
+                        # Go up the call stack to find _build_local_query_context
+                        while frame:
+                            frame_info = frame.f_code.co_name
+                            if frame_info == '_build_local_query_context':
+                                # Found the right frame, extract variables
+                                frame_locals = frame.f_locals
 
-            # Handler is now attached to capture log messages
+                                node_datas = frame_locals.get('node_datas', [])
+                                use_communities = frame_locals.get('use_communities', [])
+                                use_relations = frame_locals.get('use_relations', [])
+
+                                # Convert real data
+                                if node_datas:
+                                    logger.info(f"🎯 INTERCEPTED REAL ENTITIES from frame: {len(node_datas)} entities")
+                                    real_entities = self._convert_graphrag_entities(node_datas)
+                                    for i, entity in enumerate(real_entities[:5]):
+                                        logger.info(f"   Entity {i}: {entity['name']} ({entity['type']})")
+
+                                if use_communities:
+                                    logger.info(f"🎯 INTERCEPTED REAL COMMUNITIES from frame: {len(use_communities)} communities")
+                                    real_communities = self._convert_graphrag_communities(use_communities)
+
+                                if use_relations:
+                                    logger.info(f"🎯 INTERCEPTED REAL RELATIONS from frame: {len(use_relations)} relations")
+                                    real_relations = self._convert_graphrag_relationships(use_relations)
+
+                                break
+                            frame = frame.f_back
+
+                        # Parse log for counts as backup
+                        import re
+                        pattern = r'Using (\d+) entites, (\d+) communities, (\d+) relations, (\d+) text units'
+                        match = re.search(pattern, str(message))
+                        if match:
+                            logger.info(f"🎯 CAPTURED COUNTS from nano-graphrag log:")
+                            logger.info(f"   - Entities: {match.group(1)}")
+                            logger.info(f"   - Communities: {match.group(2)}")
+                            logger.info(f"   - Relations: {match.group(3)}")
+                            logger.info(f"   - Text units: {match.group(4)}")
+
+                    except Exception as e:
+                        logger.error(f"❌ Error capturing real data from frame: {e}")
+
+                # Call original logger
+                return original_logger_info(message, *args, **kwargs)
+
+            # Apply the patch
+            nano_op.logger.info = patched_logger_info
 
             try:
                 # Call the original function
                 result = await original_func(*args, **kwargs)
 
-                # Generate mock data based on captured counts
-                if entity_handler.captured_entities_count > 0:
-                    captured_entities_count = entity_handler.captured_entities_count
-                    captured_communities_count = entity_handler.captured_communities_count
-                    captured_relations_count = entity_handler.captured_relations_count
-                    captured_text_units_count = entity_handler.captured_text_units_count
-                    end_time = time.time()
-                    duration_ms = (end_time - start_time) * 1000
+                end_time = time.time()
+                duration_ms = (end_time - start_time) * 1000
 
-                    # Generate realistic entities based on the actual count
-                    entities = self._generate_mock_entities_from_count(captured_entities_count)
-                    communities = self._generate_mock_communities_from_count(captured_communities_count)
-                    relationships = self._generate_mock_relationships_from_count(captured_relations_count)
+                # Use REAL data if we captured it, otherwise fallback to mock
+                if real_entities or real_communities or real_relations:
+                    # Use real data we captured
+                    entities = real_entities if real_entities else []
+                    communities = real_communities if real_communities else []
+                    relationships = real_relations if real_relations else []
 
                     # Store in current_analysis for the frontend
                     self.current_analysis = {
@@ -194,17 +207,18 @@ class GraphRAGQueryInterceptor:
                         'query_id': self.query_counter + 1,
                         'completion_time': datetime.utcnow().isoformat(),
                         'start_time': start_time,
-                        'prompt_length': len(str(query))
+                        'prompt_length': len(str(query)),
+                        'has_real_data': bool(real_entities)  # Flag to show if we have real data
                     }
 
-                    logger.info(f"🎊 Generated mock data: {len(entities)} entities, {len(communities)} communities, {len(relationships)} relationships")
+                    data_type = "REAL" if real_entities else "MOCK"
+                    logger.info(f"🎊 Generated {data_type} data: {len(entities)} entities, {len(communities)} communities, {len(relationships)} relationships")
                 else:
-                    logger.warning("❌ No entity counts captured - using fallback")
+                    logger.warning("❌ No entity data captured - using fallback")
 
             finally:
-                # Remove the handler and restore original level
-                nano_logger.removeHandler(entity_handler)
-                nano_logger.setLevel(original_level)
+                # Restore original logger
+                nano_op.logger.info = original_logger_info
 
             return result
 
