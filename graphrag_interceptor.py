@@ -100,7 +100,7 @@ class GraphRAGQueryInterceptor:
         return wrapper
 
     def intercept_build_local_query_context(self, original_func):
-        """Direct interception using monkey-patching of nano-graphrag logger"""
+        """Intercept using Python logging handler to capture nano-graphrag messages"""
 
         @wraps(original_func)
         async def wrapper(*args, **kwargs):
@@ -109,17 +109,11 @@ class GraphRAGQueryInterceptor:
 
             logger.info(f"🎯 Intercepting _build_local_query_context for query: '{query}'")
 
-            # Import nano-graphrag logger with error handling
-            import nano_graphrag
+            # Use Python logging handler to capture nano-graphrag log messages
+            import logging
 
-            # Try to access the logger, fallback if not available
-            try:
-                original_logger_info = nano_graphrag.logger.info
-                has_logger = True
-            except AttributeError:
-                logger.warning("nano_graphrag.logger not available, using fallback mode")
-                original_logger_info = None
-                has_logger = False
+            # Get the nano-graphrag logger by name
+            nano_logger = logging.getLogger('nano-graphrag')
 
             # Variables to capture the data
             captured_entities_count = 0
@@ -127,46 +121,62 @@ class GraphRAGQueryInterceptor:
             captured_relations_count = 0
             captured_text_units_count = 0
 
-            def patched_logger_info(message, *args, **kwargs):
-                """Patched logger that captures the "Using X entities..." message"""
-                nonlocal captured_entities_count, captured_communities_count, captured_relations_count, captured_text_units_count
+            # Create a custom logging handler to capture the message
+            class EntityCountHandler(logging.Handler):
+                def __init__(self):
+                    super().__init__()
+                    self.captured_entities_count = 0
+                    self.captured_communities_count = 0
+                    self.captured_relations_count = 0
+                    self.captured_text_units_count = 0
 
-                # Check if this is the message we're looking for
-                if "Using" in str(message) and "entities" in str(message):
-                    try:
-                        # Parse the message: "Using 20 entites, 5 communities, 75 relations, 3 text units"
-                        import re
-                        pattern = r'Using (\d+) entities, (\d+) communities, (\d+) relations, (\d+) text units'
-                        match = re.search(pattern, str(message))
-                        if match:
-                            captured_entities_count = int(match.group(1))
-                            captured_communities_count = int(match.group(2))
-                            captured_relations_count = int(match.group(3))
-                            captured_text_units_count = int(match.group(4))
+                def emit(self, record):
+                    message = record.getMessage()
+                    # Check if this is the message we're looking for
+                    # Note: nano-graphrag source has typo "entites" instead of "entities" at line 903 in _op.py
+                    if "Using" in message and "entites" in message:
+                        # Debug: log the raw message being processed
+                        logger.debug(f"📝 Processing nano-graphrag message: {message[:200]}...")
+                        try:
+                            # Parse the message: "Using 20 entites, 5 communities, 75 relations, 3 text units"
+                            # Note: Pattern matches nano-graphrag's actual typo "entites" (not "entities")
+                            import re
+                            pattern = r'Using (\d+) entites, (\d+) communities, (\d+) relations, (\d+) text units'
+                            match = re.search(pattern, message)
+                            if match:
+                                self.captured_entities_count = int(match.group(1))
+                                self.captured_communities_count = int(match.group(2))
+                                self.captured_relations_count = int(match.group(3))
+                                self.captured_text_units_count = int(match.group(4))
 
-                            logger.info(f"🎯 CAPTURED COUNTS from nano-graphrag log:")
-                            logger.info(f"   - Entities: {captured_entities_count}")
-                            logger.info(f"   - Communities: {captured_communities_count}")
-                            logger.info(f"   - Relations: {captured_relations_count}")
-                            logger.info(f"   - Text units: {captured_text_units_count}")
-                        else:
-                            logger.warning(f"⚠️ Could not parse message: {message}")
-                    except Exception as e:
-                        logger.error(f"❌ Error parsing nano-graphrag log: {e}")
+                                logger.info(f"🎯 CAPTURED COUNTS from nano-graphrag log:")
+                                logger.info(f"   - Entities: {self.captured_entities_count}")
+                                logger.info(f"   - Communities: {self.captured_communities_count}")
+                                logger.info(f"   - Relations: {self.captured_relations_count}")
+                                logger.info(f"   - Text units: {self.captured_text_units_count}")
+                            else:
+                                logger.warning(f"⚠️ Could not parse message: {message}")
+                        except Exception as e:
+                            logger.error(f"❌ Error parsing nano-graphrag log: {e}")
 
-                # Call original logger
-                return original_logger_info(message, *args, **kwargs)
+            # Create and add the handler
+            entity_handler = EntityCountHandler()
+            nano_logger.addHandler(entity_handler)
+            original_level = nano_logger.level
+            nano_logger.setLevel(logging.INFO)  # Ensure INFO messages are captured
 
-            # Monkey patch the logger if available
-            if has_logger and original_logger_info:
-                nano_graphrag.logger.info = patched_logger_info
+            # Handler is now attached to capture log messages
 
             try:
                 # Call the original function
                 result = await original_func(*args, **kwargs)
 
                 # Generate mock data based on captured counts
-                if captured_entities_count > 0:
+                if entity_handler.captured_entities_count > 0:
+                    captured_entities_count = entity_handler.captured_entities_count
+                    captured_communities_count = entity_handler.captured_communities_count
+                    captured_relations_count = entity_handler.captured_relations_count
+                    captured_text_units_count = entity_handler.captured_text_units_count
                     end_time = time.time()
                     duration_ms = (end_time - start_time) * 1000
 
@@ -192,9 +202,9 @@ class GraphRAGQueryInterceptor:
                     logger.warning("❌ No entity counts captured - using fallback")
 
             finally:
-                # Restore original logger if available
-                if has_logger and original_logger_info:
-                    nano_graphrag.logger.info = original_logger_info
+                # Remove the handler and restore original level
+                nano_logger.removeHandler(entity_handler)
+                nano_logger.setLevel(original_level)
 
             return result
 
