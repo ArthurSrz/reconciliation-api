@@ -1464,8 +1464,20 @@ def upload_local_data():
 
         logger.info("📤 Uploading local book data to Railway volume...")
 
-        # Copy local book data directly to Railway volume
-        success = copy_local_data_to_volume()
+        # Force download from Google Drive to populate volume
+        # First, clear any existing data to force fresh download
+        volume_dir = Path(volume_path)
+        if volume_dir.exists() and any(volume_dir.iterdir()):
+            logger.info("🗑️ Clearing existing volume data to force fresh download")
+            import shutil
+            for item in volume_dir.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item)
+                elif item.is_file():
+                    item.unlink()
+
+        # Now trigger download
+        success = ensure_book_data_available()
 
         if success:
             available_books = list_available_books()
