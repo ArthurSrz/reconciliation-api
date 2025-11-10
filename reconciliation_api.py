@@ -496,7 +496,9 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
         from pathlib import Path
         import networkx as nx
 
-        graph_path = Path("book_data") / book_id / "graph_chunk_entity_relation.graphml"
+        # Use dynamic path for both local and Railway volume
+        base_path = get_book_data_base_path()
+        graph_path = Path(base_path) / book_id / "graph_chunk_entity_relation.graphml"
 
         if not graph_path.exists():
             logger.warning(f"Graph file not found: {graph_path}")
