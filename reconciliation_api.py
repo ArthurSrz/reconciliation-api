@@ -1501,6 +1501,27 @@ def upload_local_data():
             'error': str(e)
         }), 500
 
+@app.route('/debug/env', methods=['GET'])
+def debug_env():
+    """Debug endpoint to check environment variables"""
+    try:
+        volume_path = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH')
+        volume_contents = []
+        if volume_path and Path(volume_path).exists():
+            volume_contents = [str(item) for item in Path(volume_path).iterdir()]
+
+        return jsonify({
+            'railway_volume_path': volume_path,
+            'book_data_drive_id': os.environ.get('BOOK_DATA_DRIVE_ID'),
+            'base_path': get_book_data_base_path(),
+            'volume_exists': Path(volume_path).exists() if volume_path else False,
+            'volume_contents': volume_contents
+        })
+    except Exception as e:
+        return jsonify({
+            'error': str(e)
+        }), 500
+
 @app.teardown_appcontext
 def cleanup(error):
     """Cleanup on app context teardown"""
