@@ -107,6 +107,45 @@ def ensure_book_data_available():
     logger.info("📂 No automatic download configured")
     return False
 
+def copy_local_data_to_volume():
+    """Copy local book data directory to Railway volume"""
+    volume_path = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH')
+    if not volume_path:
+        logger.error("No Railway volume path found")
+        return False
+
+    local_book_data = "book_data"
+    if not Path(local_book_data).exists():
+        logger.error(f"Local book data directory not found: {local_book_data}")
+        return False
+
+    try:
+        import shutil
+        volume_dir = Path(volume_path)
+        volume_dir.mkdir(exist_ok=True)
+
+        logger.info(f"📤 Copying book data from {local_book_data} to {volume_path}")
+
+        # Copy each book directory
+        local_dir = Path(local_book_data)
+        copied_books = []
+
+        for item in local_dir.iterdir():
+            if item.is_dir() and not item.name.startswith('.'):
+                dest_path = volume_dir / item.name
+                if dest_path.exists():
+                    shutil.rmtree(dest_path)  # Remove existing
+                shutil.copytree(item, dest_path)
+                copied_books.append(item.name)
+                logger.info(f"✅ Copied book: {item.name}")
+
+        logger.info(f"📚 Successfully copied {len(copied_books)} books to volume")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Error copying data to volume: {e}")
+        return False
+
 # Neo4j driver instance
 neo4j_driver = None
 
@@ -1425,8 +1464,8 @@ def upload_local_data():
 
         logger.info("📤 Uploading local book data to Railway volume...")
 
-        # Trigger the book data download function we already have
-        success = ensure_book_data_available()
+        # Copy local book data directly to Railway volume
+        success = copy_local_data_to_volume()
 
         if success:
             available_books = list_available_books()
