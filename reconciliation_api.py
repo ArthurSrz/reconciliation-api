@@ -218,6 +218,19 @@ def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
             except Exception as e:
                 logger.warning(f"⚠️ Could not intercept _build_local_query_context: {e}")
 
+            # Intercepter aussi la fonction global_query pour capturer les données du mode global
+            try:
+                logger.info("🔧 Intercepting global_query function...")
+                from nano_graphrag._op import global_query
+                original_global_query = global_query
+                intercepted_global_query = graphrag_interceptor.intercept_global_query(original_global_query)
+
+                # Remplacer temporairement la fonction dans le module
+                nano_graphrag._op.global_query = intercepted_global_query
+                logger.info("✅ Successfully intercepted global_query function")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not intercept global_query: {e}")
+
             try:
                 logger.info("🔧 Creating GraphRAG instance...")
                 local_graphrag = GraphRAG(

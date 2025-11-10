@@ -36,6 +36,143 @@ class GraphRAGQueryInterceptor:
             return {key: self._clean_quotes(val) for key, val in value.items()}
         return value
 
+    def intercept_global_query(self, original_func):
+        """Intercept and capture data from global_query processing"""
+
+        @wraps(original_func)
+        async def wrapper(*args, **kwargs):
+            start_time = time.time()
+            query = args[0] if args else "unknown"
+
+            logger.info(f"🌍 Intercepting global_query for query: '{query}'")
+
+            # Variables to store global query data
+            real_communities = []
+            real_entities = []
+            real_relations = []
+
+            # We'll capture community data from the global_query processing
+            import nano_graphrag._op as nano_op
+
+            # Store the original logger.info function
+            original_logger_info = nano_op.logger.info
+
+            def patched_global_logger_info(message, *args, **kwargs):
+                """Patched logger that captures global query data"""
+                nonlocal real_communities, real_entities, real_relations
+
+                # Capture community count information
+                if "Revtrieved" in str(message) and "communities" in str(message):
+                    try:
+                        import inspect
+                        frame = inspect.currentframe()
+
+                        # Go up the call stack to find global_query
+                        while frame:
+                            frame_info = frame.f_code.co_name
+                            if frame_info == 'global_query':
+                                # Found the right frame, extract community_datas
+                                frame_locals = frame.f_locals
+
+                                community_datas = frame_locals.get('community_datas', [])
+
+                                if community_datas:
+                                    logger.info(f"🌍 INTERCEPTED GLOBAL COMMUNITIES: {len(community_datas)} communities")
+                                    real_communities = self._convert_global_communities(community_datas)
+                                    for i, community in enumerate(real_communities[:3]):
+                                        logger.info(f"   Community {i}: {community.get('title', 'N/A')}")
+
+                                break
+                            frame = frame.f_back
+
+                    except Exception as e:
+                        logger.error(f"❌ Error capturing global community data: {e}")
+
+                # Call original logger
+                return original_logger_info(message, *args, **kwargs)
+
+            # Apply the patch
+            nano_op.logger.info = patched_global_logger_info
+
+            try:
+                # Call the original function
+                result = await original_func(*args, **kwargs)
+
+                end_time = time.time()
+                duration_ms = (end_time - start_time) * 1000
+
+                # Check if result is the fail_response
+                if result == "Sorry, I'm not able to provide an answer to that question.":
+                    logger.warning("🌍 Global query returned fail_response - likely no communities found")
+                    # Still provide some debug info
+                    self.current_analysis = {
+                        'duration_ms': duration_ms,
+                        'entities': [],
+                        'communities': [],
+                        'relationships': [],
+                        'mode': 'global',
+                        'status': 'failed - no communities'
+                    }
+                else:
+                    # Use captured data for successful queries
+                    entities = real_entities if real_entities else []
+                    communities = real_communities if real_communities else []
+                    relationships = real_relations if real_relations else []
+
+                    logger.info(f"✅ Global query completed - captured {len(communities)} communities, {len(entities)} entities, {len(relationships)} relations")
+
+                    # Store analysis for the API
+                    self.current_analysis = {
+                        'duration_ms': duration_ms,
+                        'entities': entities,
+                        'communities': communities,
+                        'relationships': relationships,
+                        'mode': 'global'
+                    }
+
+                return result
+
+            finally:
+                # Restore the original logger
+                nano_op.logger.info = original_logger_info
+
+        return wrapper
+
+    def _convert_global_communities(self, community_datas):
+        """Convert global query community data to frontend format"""
+        communities = []
+        for i, community_data in enumerate(community_datas[:10]):  # Limit to 10
+            try:
+                # Extract community information
+                report_json = community_data.get('report_json', {})
+                title = report_json.get('title', f'Community {i+1}')
+                summary = report_json.get('summary', 'No summary available')
+                rating = report_json.get('rating', 0)
+                occurrence = community_data.get('occurrence', 0)
+
+                communities.append({
+                    'id': i + 1,
+                    'title': title,
+                    'summary': summary,
+                    'rating': rating,
+                    'relevance': min(rating / 10.0, 1.0),  # Normalize rating to 0-1
+                    'occurrence': occurrence,
+                    'selected': True
+                })
+            except Exception as e:
+                logger.warning(f"Error converting community {i}: {e}")
+                communities.append({
+                    'id': i + 1,
+                    'title': f'Community {i+1}',
+                    'summary': 'Error processing community data',
+                    'rating': 0,
+                    'relevance': 0.5,
+                    'occurrence': 0,
+                    'selected': False
+                })
+
+        return communities
+
     def intercept_query_processing(self, original_llm_func):
         """Decorator pour intercepter et analyser le processing des requêtes"""
 
