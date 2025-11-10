@@ -22,9 +22,6 @@ numpy>=1.21.0
 scipy>=1.7.0
 scikit-learn>=1.0.0
 pandas>=2.0.0
-# Use CPU-only versions for Railway compatibility
---index-url https://download.pytorch.org/whl/cpu
-torch>=2.0.0
 transformers>=4.20.0
 sentence-transformers>=2.2.0
 requests>=2.28.0
