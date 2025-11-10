@@ -136,7 +136,7 @@ class GraphRAGQueryInterceptor:
                     try:
                         # Parse the message: "Using 20 entites, 5 communities, 75 relations, 3 text units"
                         import re
-                        pattern = r'Using (\d+) entites, (\d+) communities, (\d+) relations, (\d+) text units'
+                        pattern = r'Using (\d+) entities, (\d+) communities, (\d+) relations, (\d+) text units'
                         match = re.search(pattern, str(message))
                         if match:
                             captured_entities_count = int(match.group(1))
