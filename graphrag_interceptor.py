@@ -304,12 +304,29 @@ class GraphRAGQueryInterceptor:
                 continue
 
             try:
-                # GraphRAG relations have different formats, extract what we can
+                # GraphRAG relations format: {"src_tgt": (src, tgt), "rank": d, **other_fields}
                 if isinstance(relation, dict):
+                    # Extract source and target from src_tgt tuple
+                    src_tgt = relation.get('src_tgt')
+                    if src_tgt and len(src_tgt) >= 2:
+                        source, target = src_tgt[0], src_tgt[1]
+                    else:
+                        # Fallback to other possible field names
+                        source = relation.get('source', relation.get('src', f'entity_{i}'))
+                        target = relation.get('target', relation.get('tgt', f'entity_{i+1}'))
+
+                    # Get description from various possible fields
+                    description = (
+                        relation.get('description') or
+                        relation.get('label') or
+                        relation.get('relation') or
+                        f"{source} → {target}"
+                    )
+
                     rel_data = {
-                        'source': relation.get('source', relation.get('src', f'entity_{i}')),
-                        'target': relation.get('target', relation.get('tgt', f'entity_{i+1}')),
-                        'description': relation.get('description', relation.get('label', f'Relationship {i}')),
+                        'source': str(source),
+                        'target': str(target),
+                        'description': str(description)[:200] if description else f'Relationship {i+1}',
                         'weight': float(relation.get('weight', relation.get('rank', 1.0))),
                         'rank': relation.get('rank', i + 1),
                         'traversal_order': i + 1
@@ -327,13 +344,16 @@ class GraphRAGQueryInterceptor:
 
                 relationships.append(rel_data)
 
-                if len(relationships) >= 53:  # Limit to 53 relationships like the original
+                # Increase limit to capture more relationships - was 53, now 100
+                if len(relationships) >= 100:
                     break
 
             except Exception as e:
                 logger.warning(f"Error converting relationship {i}: {e}")
+                logger.warning(f"Relation data: {relation}")
                 continue
 
+        logger.info(f"🔗 Converted {len(relationships)} relationships from {len(use_relations)} raw relations")
         return relationships
 
     def _generate_mock_entities_from_count(self, count: int) -> List[Dict]:
