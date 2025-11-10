@@ -168,10 +168,11 @@ def list_available_books() -> list:
 GRAPHRAG_WORKING_DIR = os.getenv('GRAPHRAG_WORKING_DIR', None)  # Will be set dynamically
 local_graphrag = None
 book_data_path = None
+current_book_id = None  # Track the currently loaded book
 
 def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
     """Get or create local GraphRAG instance with real interceptor and book data"""
-    global local_graphrag, book_data_path
+    global local_graphrag, book_data_path, current_book_id
 
     # Always ensure we have fresh data for the requested book
     try:
@@ -184,8 +185,8 @@ def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
             logger.error(f"❌ Book {book_id} not found. Available: {available_books}")
             return None
 
-        # Only recreate GraphRAG if it doesn't exist
-        if local_graphrag is None:
+        # Recreate GraphRAG if it doesn't exist OR if the book changed
+        if local_graphrag is None or current_book_id != book_id:
             logger.info(f"🔧 Creating new GraphRAG instance for path: {book_data_path}")
 
             try:
@@ -244,6 +245,7 @@ def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
                     graph_cluster_algorithm="leiden"
                 )
                 logger.info("✅ GraphRAG instance created successfully")
+                current_book_id = book_id  # Track the current book
             except json.JSONDecodeError as e:
                 logger.error(f"❌ JSON parsing error in GraphRAG initialization: {e}")
                 logger.error(f"❌ This suggests corrupted files in production environment")
@@ -256,6 +258,7 @@ def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
                         cheap_model_func=intercepted_llm
                     )
                     logger.info("✅ GraphRAG instance created with minimal config")
+                    current_book_id = book_id  # Track the current book
                 except Exception as e2:
                     logger.error(f"❌ Failed even with minimal config: {e2}")
                     raise e
@@ -1192,9 +1195,8 @@ def query_multi_book():
                 book_processing_time = time.time() - book_start_time
                 total_processing_time += book_processing_time
 
-                debug_info = None
-                if debug_mode:
-                    debug_info = graphrag_interceptor.get_real_debug_info()
+                # Always collect debug_info for entity aggregation in multi-book mode
+                debug_info = graphrag_interceptor.get_real_debug_info()
 
                 # Initialize empty lists for tracking
                 entities = []
@@ -1263,6 +1265,42 @@ def query_multi_book():
                     'processing_time': time.time() - book_start_time
                 })
 
+        # Convert aggregated entities to selected_nodes format for visualization
+        selected_nodes = []
+        for entity in aggregated_entities.values():
+            node_obj = {
+                'id': entity.get('id', ''),
+                'label': entity.get('name', entity.get('id', '')),
+                'type': entity.get('type', 'Entity'),
+                'labels': [entity.get('type', 'Entity')],
+                'properties': {
+                    'name': entity.get('name', entity.get('id', '')),
+                    'description': entity.get('description', ''),
+                    'books': entity.get('books', []),
+                    'found_in': entity.get('found_in', [])
+                },
+                'degree': len(entity.get('books', [])),  # Use book count as degree
+                'centrality_score': len(entity.get('books', []))
+            }
+            selected_nodes.append(node_obj)
+
+        # Convert aggregated relationships to selected_relationships format
+        selected_relationships = []
+        for rel in aggregated_relationships.values():
+            rel_obj = {
+                'id': f"{rel.get('source', '')}_{rel.get('target', '')}",
+                'type': rel.get('description', 'RELATED'),
+                'source': rel.get('source', ''),
+                'target': rel.get('target', ''),
+                'properties': {
+                    'description': rel.get('description', 'Related to'),
+                    'books': rel.get('books', []),
+                    'found_in': rel.get('found_in', []),
+                    'weight': rel.get('weight', 1.0)
+                }
+            }
+            selected_relationships.append(rel_obj)
+
         response = {
             'success': True,
             'query': query,
@@ -1276,6 +1314,8 @@ def query_multi_book():
                 'relationships': list(aggregated_relationships.values()),
                 'communities': list(aggregated_communities.values())
             },
+            'selected_nodes': selected_nodes,  # Add for visualization
+            'selected_relationships': selected_relationships,  # Add for visualization
             'summary': {
                 'total_entities': len(aggregated_entities),
                 'total_relationships': len(aggregated_relationships),

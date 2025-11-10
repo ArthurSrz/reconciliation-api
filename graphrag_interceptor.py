@@ -328,30 +328,29 @@ class GraphRAGQueryInterceptor:
                 end_time = time.time()
                 duration_ms = (end_time - start_time) * 1000
 
-                # Use REAL data if we captured it, otherwise fallback to mock
-                if real_entities or real_communities or real_relations:
-                    # Use real data we captured
-                    entities = real_entities if real_entities else []
-                    communities = real_communities if real_communities else []
-                    relationships = real_relations if real_relations else []
+                # ALWAYS use real data - no more mock fallback
+                entities = real_entities if real_entities else []
+                communities = real_communities if real_communities else []
+                relationships = real_relations if real_relations else []
 
-                    # Store in current_analysis for the frontend
-                    self.current_analysis = {
-                        'entities': entities,
-                        'communities': communities,
-                        'relationships': relationships,
-                        'duration_ms': duration_ms,
-                        'query_id': self.query_counter + 1,
-                        'completion_time': datetime.utcnow().isoformat(),
-                        'start_time': start_time,
-                        'prompt_length': len(str(query)),
-                        'has_real_data': bool(real_entities)  # Flag to show if we have real data
-                    }
+                # Store in current_analysis for the frontend
+                self.current_analysis = {
+                    'entities': entities,
+                    'communities': communities,
+                    'relationships': relationships,
+                    'duration_ms': duration_ms,
+                    'query_id': self.query_counter + 1,
+                    'completion_time': datetime.utcnow().isoformat(),
+                    'start_time': start_time,
+                    'prompt_length': len(str(query)),
+                    'has_real_data': bool(real_entities)  # Flag to show if we have real data
+                }
 
-                    data_type = "REAL" if real_entities else "MOCK"
-                    logger.info(f"🎊 Generated {data_type} data: {len(entities)} entities, {len(communities)} communities, {len(relationships)} relationships")
-                else:
-                    logger.warning("❌ No entity data captured - using fallback")
+                data_type = "REAL" if real_entities else "EMPTY"
+                logger.info(f"🎊 Generated {data_type} data: {len(entities)} entities, {len(communities)} communities, {len(relationships)} relationships")
+
+                if not real_entities:
+                    logger.warning("❌ No entity data captured from GraphRAG - this indicates an interception issue")
 
             finally:
                 # Restore original logger
@@ -493,87 +492,8 @@ class GraphRAGQueryInterceptor:
         logger.info(f"🔗 Converted {len(relationships)} relationships from {len(use_relations)} raw relations")
         return relationships
 
-    def _generate_mock_entities_from_count(self, count: int) -> List[Dict]:
-        """Generate realistic mock entities based on actual count from GraphRAG"""
-        entities = []
-
-        # Common literary character names to make it realistic
-        names = ["GABRIEL", "SCROOGE", "CRATCHIT", "MARLEY", "TINY TIM", "FRED", "FEZZIWIG",
-                "THE GHOST", "NARRATOR", "MRS CRATCHIT", "BELLE", "FAN", "OLD JOE",
-                "CHARWOMAN", "UNDERTAKER", "BUSINESSMAN", "POOR MAN", "RICH MAN",
-                "CHILD", "WOMAN"]
-
-        for i in range(min(count, len(names))):
-            entity = {
-                'id': names[i].lower().replace(' ', '_'),
-                'name': names[i],
-                'type': 'CHARACTER' if i < count * 0.7 else 'CONCEPT',
-                'description': f'Character from the literary work, rank {i+1}',
-                'rank': i + 1,
-                'score': max(0.1, 1.0 - (i * 0.05)),
-                'selected': True
-            }
-            entities.append(entity)
-
-        return entities
-
-    def _generate_mock_communities_from_count(self, count: int) -> List[Dict]:
-        """Generate realistic mock communities based on actual count from GraphRAG"""
-        communities = []
-
-        community_titles = [
-            "Main Characters and Their Relationships",
-            "Social and Economic Themes",
-            "Spiritual and Moral Transformation",
-            "Family and Social Connections",
-            "Poverty and Wealth Dynamics"
-        ]
-
-        for i in range(min(count, len(community_titles))):
-            community = {
-                'id': i,
-                'title': community_titles[i],
-                'content': f'Community {i} represents a thematic cluster in the narrative',
-                'relevance': max(0.6, 1.0 - (i * 0.1)),
-                'impact_rating': max(0.5, 0.9 - (i * 0.1))
-            }
-            communities.append(community)
-
-        return communities
-
-    def _generate_mock_relationships_from_count(self, count: int) -> List[Dict]:
-        """Generate realistic mock relationships based on actual count from GraphRAG"""
-        relationships = []
-
-        # Common relationship patterns in literature
-        relationship_patterns = [
-            ("SCROOGE", "CRATCHIT", "employs"),
-            ("SCROOGE", "MARLEY", "business_partner"),
-            ("CRATCHIT", "TINY TIM", "father_of"),
-            ("SCROOGE", "FRED", "uncle_of"),
-            ("SCROOGE", "THE GHOST", "visited_by"),
-            ("MARLEY", "SCROOGE", "warns"),
-            ("GABRIEL", "NARRATOR", "character_in"),
-            ("BELLE", "SCROOGE", "former_love_of"),
-            ("FAN", "SCROOGE", "sister_of"),
-            ("FEZZIWIG", "SCROOGE", "former_employer_of")
-        ]
-
-        for i in range(min(count, len(relationship_patterns) * 5)):  # Multiply patterns
-            pattern_idx = i % len(relationship_patterns)
-            source, target, relation_type = relationship_patterns[pattern_idx]
-
-            relationship = {
-                'source': source.lower().replace(' ', '_'),
-                'target': target.lower().replace(' ', '_'),
-                'description': f'{source} {relation_type} {target}',
-                'weight': max(0.3, 1.0 - (i * 0.01)),
-                'rank': i + 1,
-                'traversal_order': i + 1
-            }
-            relationships.append(relationship)
-
-        return relationships
+    # REMOVED: Mock data generation functions
+    # We now only use REAL GraphRAG data to ensure authentic results
 
     def _analyze_prompt_context(self, prompt: str) -> Dict[str, Any]:
         """Analyser le prompt pour extraire communities, entities, relationships"""
