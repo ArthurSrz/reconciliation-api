@@ -1,21 +1,23 @@
 """
-GraphRAG Query Interceptor - Real-time analysis comme dans test_query_analysis.py
-Capture les vraies données du processing GraphRAG pour l'API de réconciliation
+GraphRAG Query Interceptor - Real-time analysis avec enrichissement Neo4j
+Capture les vraies données GraphRAG et enrichit avec sous-graphes Neo4j
 """
 
 import time
 import re
 import logging
+import os
 from functools import wraps
 from typing import Dict, Any, List
 from datetime import datetime
+from neo4j import GraphDatabase
 
 logger = logging.getLogger(__name__)
 
 class GraphRAGQueryInterceptor:
     """
-    Intercepteur qui capture le vrai comportement GraphRAG
-    Inspiré de test_query_analysis.py pour donner des insights réels
+    Intercepteur qui capture GraphRAG et enrichit avec Neo4j
+    Récupère les sous-graphes réels pour visualisation connectée
     """
 
     def __init__(self):
@@ -25,6 +27,25 @@ class GraphRAGQueryInterceptor:
         self.captured_entities = []
         self.captured_communities = []
         self.captured_relations = []
+        self.neo4j_driver = None
+        self._initialize_neo4j()
+
+    def _initialize_neo4j(self):
+        """Initialize Neo4j connection for enrichment"""
+        try:
+            # Use same connection settings as the main app from environment variables
+            NEO4J_URI = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
+            NEO4J_USER = os.getenv('NEO4J_USER', 'neo4j')
+            NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', 'password')
+
+            self.neo4j_driver = GraphDatabase.driver(
+                NEO4J_URI,
+                auth=(NEO4J_USER, NEO4J_PASSWORD)
+            )
+            logger.info(f"✅ Neo4j connection initialized for GraphRAG enrichment: {NEO4J_URI}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not initialize Neo4j for enrichment: {e}")
+            self.neo4j_driver = None
 
     def _clean_quotes(self, value):
         """Remove quotes from Neo4j string values"""
@@ -35,6 +56,111 @@ class GraphRAGQueryInterceptor:
         elif isinstance(value, dict):
             return {key: self._clean_quotes(val) for key, val in value.items()}
         return value
+
+    def _enrich_entities_with_neo4j(self, entities: List[Dict]) -> tuple[List[Dict], List[Dict]]:
+        """
+        Enrichir les entités GraphRAG avec leurs sous-graphes Neo4j
+        Retourne: (entities_enriches, relations_neo4j)
+        """
+        if not self.neo4j_driver or not entities:
+            return entities, []
+
+        enriched_entities = []
+        neo4j_relationships = []
+
+        try:
+            with self.neo4j_driver.session() as session:
+                for entity in entities:
+                    entity_name = entity.get('name', '').strip()
+                    if not entity_name:
+                        enriched_entities.append(entity)
+                        continue
+
+                    # Query 1: Trouver les communautés de cette entité
+                    community_query = """
+                    MATCH (e:Entity {name: $entity_name})-[:BELONGS_TO]->(c:Community)
+                    RETURN c.name as community_name, c.title as community_title,
+                           c.level as level, c.rank as rank
+                    LIMIT 3
+                    """
+
+                    # Query 2: Trouver les entités connectées (1-hop)
+                    connected_query = """
+                    MATCH (e1:Entity {name: $entity_name})-[r]->(e2:Entity)
+                    RETURN e2.name as connected_entity, type(r) as relation_type,
+                           e2.entity_type as entity_type, r.weight as weight
+                    LIMIT 10
+                    """
+
+                    # Exécuter les requêtes
+                    community_results = session.run(community_query, entity_name=entity_name)
+                    connected_results = session.run(connected_query, entity_name=entity_name)
+
+                    # Collecter les communautés
+                    entity_communities = []
+                    for record in community_results:
+                        comm = {
+                            'name': record.get('community_name', ''),
+                            'title': record.get('community_title', ''),
+                            'level': record.get('level', 0),
+                            'rank': record.get('rank', 0)
+                        }
+                        entity_communities.append(comm)
+
+                        # Créer une relation entity->community
+                        if comm['name']:
+                            neo4j_relationships.append({
+                                'source': entity_name,
+                                'target': comm['name'],
+                                'type': 'BELONGS_TO',
+                                'description': f"{entity_name} belongs to community {comm['title']}",
+                                'weight': 1.0,
+                                'is_community_link': True,
+                                'community_info': comm
+                            })
+
+                    # Collecter les entités connectées
+                    entity_connections = []
+                    for record in connected_results:
+                        connected_entity = record.get('connected_entity', '')
+                        relation_type = record.get('relation_type', 'RELATED')
+                        weight = record.get('weight', 1.0)
+
+                        entity_connections.append({
+                            'entity': connected_entity,
+                            'relation': relation_type,
+                            'weight': weight
+                        })
+
+                        # Créer une relation entity->entity
+                        if connected_entity:
+                            neo4j_relationships.append({
+                                'source': entity_name,
+                                'target': connected_entity,
+                                'type': relation_type,
+                                'description': f"{entity_name} {relation_type.lower()} {connected_entity}",
+                                'weight': weight,
+                                'is_community_link': False
+                            })
+
+                    # Enrichir l'entité avec les données Neo4j
+                    enriched_entity = {
+                        **entity,
+                        'neo4j_communities': entity_communities,
+                        'neo4j_connections': entity_connections,
+                        'has_neo4j_data': True
+                    }
+                    enriched_entities.append(enriched_entity)
+
+                    if entity_communities or entity_connections:
+                        logger.info(f"🔗 Enriched {entity_name}: {len(entity_communities)} communities, {len(entity_connections)} connections")
+
+        except Exception as e:
+            logger.warning(f"❌ Error enriching entities with Neo4j: {e}")
+            return entities, []
+
+        logger.info(f"✅ Neo4j enrichment: {len(neo4j_relationships)} additional relationships found")
+        return enriched_entities, neo4j_relationships
 
     def intercept_global_query(self, original_func):
         """Intercept and capture data from global_query processing"""
@@ -583,17 +709,24 @@ class GraphRAGQueryInterceptor:
         }
 
     def get_real_debug_info(self) -> Dict[str, Any]:
-        """Générer les vraies informations de debug basées sur l'analyse"""
+        """Générer les vraies informations de debug avec enrichissement Neo4j"""
 
         if not hasattr(self, 'current_analysis') or not self.current_analysis:
             return self._get_default_debug_info()
 
         analysis = self.current_analysis
 
-        # Format compatible avec l'interface frontend
-        entities = analysis.get('entities', [])
+        # Enrichir les entités avec Neo4j
+        raw_entities = analysis.get('entities', [])
+        entities, neo4j_relationships = self._enrich_entities_with_neo4j(raw_entities)
+
         communities = analysis.get('communities', [])
         relationships = analysis.get('relationships', [])
+
+        # Combiner les relations GraphRAG + Neo4j
+        all_relationships = relationships + neo4j_relationships
+
+        logger.info(f"🎊 Debug info enriched: {len(entities)} entities, {len(all_relationships)} total relationships ({len(neo4j_relationships)} from Neo4j)")
 
         return {
             "processing_phases": {
@@ -601,7 +734,8 @@ class GraphRAGQueryInterceptor:
                     "entities": entities,
                     "duration_ms": int(analysis.get('duration_ms', 0) * 0.2),
                     "phase": "explosion",
-                    "real_count": len(entities)
+                    "real_count": len(entities),
+                    "neo4j_enriched": len(neo4j_relationships) > 0
                 },
                 "community_analysis": {
                     "communities": communities,
@@ -610,10 +744,12 @@ class GraphRAGQueryInterceptor:
                     "real_count": len(communities)
                 },
                 "relationship_mapping": {
-                    "relationships": relationships,
+                    "relationships": all_relationships,
                     "duration_ms": int(analysis.get('duration_ms', 0) * 0.3),
                     "phase": "synthesis",
-                    "real_count": len(relationships)
+                    "real_count": len(all_relationships),
+                    "graphrag_count": len(relationships),
+                    "neo4j_count": len(neo4j_relationships)
                 },
                 "text_synthesis": {
                     "sources": self._generate_text_sources(),
