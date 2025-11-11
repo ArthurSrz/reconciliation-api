@@ -170,6 +170,81 @@ local_graphrag = None
 book_data_path = None
 current_book_id = None  # Track the currently loaded book
 
+def _get_cross_book_neo4j_relationships(aggregated_entities):
+    """
+    Get Neo4j relationships for entities that appear in multiple books
+    Returns cross-book connections and community memberships
+    """
+    cross_book_relationships = []
+
+    # Find entities that appear in multiple books
+    multi_book_entities = {
+        entity_id: entity_data for entity_id, entity_data in aggregated_entities.items()
+        if len(entity_data.get('books', [])) > 1
+    }
+
+    if not multi_book_entities:
+        logger.info("📚 No multi-book entities found for cross-book enrichment")
+        return []
+
+    try:
+        driver = get_neo4j_driver()
+        with driver.session() as session:
+            for entity_id, entity_data in multi_book_entities.items():
+                entity_name = entity_data.get('name', '')
+                books = entity_data.get('books', [])
+
+                if not entity_name:
+                    continue
+
+                # Query for this entity's relationships across all contexts
+                cross_query = """
+                MATCH (e1:Entity {name: $entity_name})-[r]->(target)
+                WHERE target:Entity OR target:Community
+                RETURN DISTINCT
+                    target.name as target_name,
+                    labels(target) as target_labels,
+                    type(r) as relation_type,
+                    target.entity_type as target_type,
+                    target.title as target_title,
+                    r.weight as weight
+                LIMIT 20
+                """
+
+                results = session.run(cross_query, entity_name=entity_name)
+
+                for record in results:
+                    target_name = record.get('target_name', '')
+                    target_labels = record.get('target_labels', [])
+                    relation_type = record.get('relation_type', 'RELATED')
+                    weight = record.get('weight', 1.0)
+
+                    if target_name and target_name != entity_name:
+                        # Determine if target is community or entity
+                        is_community = 'Community' in target_labels
+                        target_title = record.get('target_title', target_name)
+
+                        cross_book_relationships.append({
+                            'source': entity_name,
+                            'target': target_name,
+                            'type': relation_type,
+                            'description': f"{entity_name} {relation_type.lower()} {target_title}",
+                            'weight': weight,
+                            'books': books,  # Books where source entity was found
+                            'is_cross_book': True,
+                            'is_community_link': is_community,
+                            'source_books': len(books),  # Number of books containing this entity
+                            'traversal_order': len(cross_book_relationships) + 1
+                        })
+
+            logger.info(f"🌐 Found {len(cross_book_relationships)} cross-book Neo4j relationships for {len(multi_book_entities)} multi-book entities")
+
+    except Exception as e:
+        logger.warning(f"❌ Error fetching cross-book Neo4j relationships: {e}")
+        return []
+
+    return cross_book_relationships
+
 def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
     """Get or create local GraphRAG instance with real interceptor and book data"""
     global local_graphrag, book_data_path, current_book_id
@@ -570,36 +645,129 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                         return value.strip('"').strip("'")
                     return value
 
+                # Pour les nœuds GraphRAG, utiliser le nom de l'entité comme ID pour correspondre aux relations
+                graphrag_node_id = clean_quotes(node_name)
+
                 node_obj = {
-                    'id': clean_quotes(str(node_id)),
+                    'id': graphrag_node_id,  # Utiliser le nom de l'entité pour les relations GraphRAG
                     'label': clean_quotes(node_name),  # Frontend expects 'label' field
                     'type': clean_quotes(node_data.get('entity_type', 'Entity')),  # Frontend expects 'type' field
                     'labels': [clean_quotes(node_data.get('entity_type', 'Entity'))],
                     'properties': {
                         'name': clean_quotes(node_name),
                         'description': clean_quotes(node_data.get('description', '')),
-                        'entity_type': clean_quotes(node_data.get('entity_type', 'Entity'))
+                        'entity_type': clean_quotes(node_data.get('entity_type', 'Entity')),
+                        'graphrag_node': True,  # Marquer comme nœud GraphRAG
+                        'original_neo4j_id': clean_quotes(str(node_id))  # Garder l'ID original pour référence
                     },
                     'degree': G.degree(node_id),
                     'centrality_score': G.degree(node_id)
                 }
                 selected_nodes.append(node_obj)
 
-        # Extraire les relations entre les nœuds sélectionnés
+        # Extraire les vraies relations GraphRAG depuis debug_info pour le chemin de traversée
         selected_relationships = []
-        for source, target, edge_data in G.edges(data=True):
-            if source in selected_node_ids and target in selected_node_ids:
+
+        # Priorité 1: Utiliser les vraies relations GraphRAG du debug_info
+        graphrag_relationships = debug_info.get('processing_phases', {}).get('relationship_mapping', {}).get('relationships', [])
+
+        if graphrag_relationships:
+            logger.info(f"🎯 Extracting {len(graphrag_relationships)} GraphRAG traversal relationships")
+
+            # Collecter toutes les entités mentionnées dans les relations GraphRAG
+            graphrag_entities = set()
+            for rel_data in graphrag_relationships:
+                source_clean = clean_quotes(str(rel_data.get('source', '')))
+                target_clean = clean_quotes(str(rel_data.get('target', '')))
+                if source_clean:
+                    graphrag_entities.add(source_clean)
+                if target_clean:
+                    graphrag_entities.add(target_clean)
+
+            logger.info(f"🔍 Found {len(graphrag_entities)} unique entities in GraphRAG relationships")
+
+            # Créer des nœuds pour toutes les entités GraphRAG qui n'existent pas encore
+            existing_node_names = {node['properties']['name'] for node in selected_nodes}
+            for entity_name in graphrag_entities:
+                if entity_name not in existing_node_names:
+                    # Créer un nœud synthétique pour cette entité GraphRAG
+                    synthetic_node = {
+                        'id': entity_name,
+                        'label': entity_name,
+                        'type': 'GraphRAG_Entity',
+                        'labels': ['GraphRAG_Entity'],
+                        'properties': {
+                            'name': entity_name,
+                            'description': f'Entity from GraphRAG traversal: {entity_name}',
+                            'entity_type': 'GraphRAG_Entity',
+                            'graphrag_node': True,
+                            'synthetic': True  # Marquer comme nœud synthétique
+                        },
+                        'degree': 1,
+                        'centrality_score': 1
+                    }
+                    selected_nodes.append(synthetic_node)
+                    existing_node_names.add(entity_name)
+                    logger.info(f"➕ Created synthetic GraphRAG node: {entity_name}")
+
+            # Maintenant créer les relations GraphRAG et s'assurer que tous les nœuds existent
+            for rel_data in graphrag_relationships:
+                # Nettoyage des guillemets pour source et target
+                source_clean = clean_quotes(str(rel_data.get('source', '')))
+                target_clean = clean_quotes(str(rel_data.get('target', '')))
+
+                # Créer des nœuds synthétiques pour source et target s'ils n'existent pas
+                for entity_name in [source_clean, target_clean]:
+                    if entity_name and entity_name not in existing_node_names:
+                        synthetic_node = {
+                            'id': entity_name,
+                            'label': entity_name,
+                            'type': 'GraphRAG_Entity',
+                            'labels': ['GraphRAG_Entity'],
+                            'properties': {
+                                'name': entity_name,
+                                'description': f'Entity from GraphRAG relationship: {entity_name}',
+                                'entity_type': 'GraphRAG_Entity',
+                                'graphrag_node': True,
+                                'synthetic': True
+                            },
+                            'degree': 1,
+                            'centrality_score': 1
+                        }
+                        selected_nodes.append(synthetic_node)
+                        existing_node_names.add(entity_name)
+                        logger.info(f"➕ Created synthetic node for relationship entity: {entity_name}")
+
                 rel_obj = {
-                    'id': f"{clean_quotes(str(source))}_{clean_quotes(str(target))}",
-                    'type': clean_quotes(edge_data.get('weight_label', 'RELATED')),
-                    'source': clean_quotes(str(source)),
-                    'target': clean_quotes(str(target)),
+                    'id': f"{source_clean}_{target_clean}",
+                    'type': clean_quotes(rel_data.get('type', rel_data.get('description', 'GRAPHRAG_PATH'))),
+                    'source': source_clean,
+                    'target': target_clean,
                     'properties': {
-                        'description': clean_quotes(edge_data.get('weight_label', 'Related to')),
-                        'weight': float(edge_data.get('weight', 1.0))
+                        'description': clean_quotes(rel_data.get('description', 'GraphRAG traversal path')),
+                        'weight': float(rel_data.get('weight', 1.0)),
+                        'traversal_order': rel_data.get('traversal_order'),
+                        'graphrag_path': True,  # Marquer comme chemin GraphRAG
+                        'is_community_link': rel_data.get('is_community_link', False)
                     }
                 }
                 selected_relationships.append(rel_obj)
+        else:
+            # Fallback: Relations locales entre nœuds sélectionnés pour démonstration
+            logger.warning("⚠️ No GraphRAG relationships found, using local graph relationships as fallback")
+            for source, target, edge_data in G.edges(data=True):
+                if source in selected_node_ids and target in selected_node_ids:
+                    rel_obj = {
+                        'id': f"{clean_quotes(str(source))}_{clean_quotes(str(target))}",
+                        'type': clean_quotes(edge_data.get('weight_label', 'RELATED')),
+                        'source': clean_quotes(str(source)),
+                        'target': clean_quotes(str(target)),
+                        'properties': {
+                            'description': clean_quotes(edge_data.get('weight_label', 'Related to')),
+                            'weight': float(edge_data.get('weight', 1.0))
+                        }
+                    }
+                    selected_relationships.append(rel_obj)
 
         logger.info(f"✅ Extracted {len(selected_nodes)} nodes and {len(selected_relationships)} relationships for GraphRAG")
 
@@ -1264,6 +1432,23 @@ def query_multi_book():
                     'error': str(book_error),
                     'processing_time': time.time() - book_start_time
                 })
+
+        # Enrich cross-book entities with Neo4j relationships
+        logger.info("🔗 Enriching cross-book relationships with Neo4j data")
+        cross_book_relationships = _get_cross_book_neo4j_relationships(aggregated_entities)
+
+        # Add cross-book relationships to aggregated data
+        for cross_rel in cross_book_relationships:
+            rel_key = f"{cross_rel.get('source')}--{cross_rel.get('target')}"
+            if rel_key not in aggregated_relationships:
+                aggregated_relationships[rel_key] = {
+                    **cross_rel,
+                    'books': cross_rel.get('books', []),
+                    'found_in': cross_rel.get('books', []),
+                    'is_cross_book': True
+                }
+
+        logger.info(f"✅ Added {len(cross_book_relationships)} cross-book Neo4j relationships")
 
         # Convert aggregated entities to selected_nodes format for visualization
         selected_nodes = []
