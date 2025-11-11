@@ -577,6 +577,116 @@ def create_simulated_debug_info(processing_time_s: float = 2.0) -> Dict[str, Any
         ]
     }
 
+def clean_quotes(text):
+    """Remove quotes from entity names and clean text"""
+    if isinstance(text, str):
+        return text.replace('"', '').replace("'", '').strip()
+    return str(text)
+
+def enrich_relationships_with_graphml(G, relationships):
+    """
+    Enrich relationship data with rich metadata from GraphML.
+
+    Args:
+        G: NetworkX graph loaded from GraphML
+        relationships: Basic relationships from debug_info
+
+    Returns:
+        Enriched relationships with weights, descriptions, source chunks, etc.
+    """
+    enriched = []
+
+    for rel_data in relationships:
+        source_clean = clean_quotes(str(rel_data.get('source', '')))
+        target_clean = clean_quotes(str(rel_data.get('target', '')))
+
+        # Default enriched relationship
+        enriched_rel = dict(rel_data)  # Copy original data
+
+        # Try to find this relationship in GraphML with rich metadata
+        graphml_edge_data = None
+
+        # Check both directions since GraphML might be undirected
+        for source_node, target_node, edge_data in G.edges(data=True):
+            source_node_clean = clean_quotes(str(source_node))
+            target_node_clean = clean_quotes(str(target_node))
+
+            # Check exact match or fuzzy match
+            if ((source_clean.upper() in source_node_clean.upper() and target_clean.upper() in target_node_clean.upper()) or
+                (target_clean.upper() in source_node_clean.upper() and source_clean.upper() in target_node_clean.upper())):
+                graphml_edge_data = edge_data
+                break
+
+        # Enrich with GraphML metadata if found
+        if graphml_edge_data:
+            enriched_rel.update({
+                'graphml_weight': float(graphml_edge_data.get('weight', 1.0)),
+                'graphml_description': clean_quotes(graphml_edge_data.get('description', '')),
+                'graphml_source_chunks': graphml_edge_data.get('source_id', ''),
+                'graphml_order': int(graphml_edge_data.get('order', 0)),
+                'has_graphml_metadata': True
+            })
+            logger.debug(f"✅ Enriched relationship {source_clean} -> {target_clean} with GraphML metadata")
+        else:
+            enriched_rel['has_graphml_metadata'] = False
+            logger.debug(f"⚠️ No GraphML metadata found for {source_clean} -> {target_clean}")
+
+        enriched.append(enriched_rel)
+
+    logger.info(f"🔗 Enriched {len([r for r in enriched if r.get('has_graphml_metadata')])} relationships with GraphML metadata out of {len(enriched)}")
+    return enriched
+
+def enrich_nodes_with_graphml(G, entity_names):
+    """
+    Enrich node data with rich metadata from GraphML.
+
+    Args:
+        G: NetworkX graph loaded from GraphML
+        entity_names: List of entity names to enrich
+
+    Returns:
+        Enriched nodes with descriptions, clusters, entity types, etc.
+    """
+    enriched_nodes = []
+
+    for entity_name in entity_names:
+        # Find matching node in GraphML
+        graphml_node_data = None
+
+        for node_id, node_data in G.nodes(data=True):
+            node_name = clean_quotes(str(node_data.get('name', node_id)))
+
+            # Check for fuzzy match
+            if entity_name.upper() in node_name.upper() or node_name.upper() in entity_name.upper():
+                graphml_node_data = node_data
+                break
+
+        # Create enriched node
+        enriched_node = {
+            'id': entity_name,
+            'name': entity_name,
+            'graphrag_node': True
+        }
+
+        # Enrich with GraphML metadata if found
+        if graphml_node_data:
+            enriched_node.update({
+                'entity_type': clean_quotes(graphml_node_data.get('entity_type', 'Unknown')),
+                'description': clean_quotes(graphml_node_data.get('description', '')),
+                'clusters': graphml_node_data.get('clusters', ''),
+                'source_chunks': graphml_node_data.get('source_id', ''),
+                'has_graphml_metadata': True
+            })
+            logger.debug(f"✅ Enriched node {entity_name} with GraphML metadata")
+        else:
+            enriched_node['has_graphml_metadata'] = False
+            logger.debug(f"⚠️ No GraphML metadata found for node {entity_name}")
+
+        enriched_nodes.append(enriched_node)
+
+    logger.info(f"🎯 Enriched {len([n for n in enriched_nodes if n.get('has_graphml_metadata')])} nodes with GraphML metadata out of {len(enriched_nodes)}")
+    return enriched_nodes
+
 def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extraire les nœuds et relations réellement utilisés par GraphRAG depuis le graphe principal
@@ -674,9 +784,12 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
         if graphrag_relationships:
             logger.info(f"🎯 Extracting {len(graphrag_relationships)} GraphRAG traversal relationships")
 
+            # Enrichir avec les métadonnées GraphML directes
+            graphml_enriched_relationships = enrich_relationships_with_graphml(G, graphrag_relationships)
+
             # Collecter toutes les entités mentionnées dans les relations GraphRAG
             graphrag_entities = set()
-            for rel_data in graphrag_relationships:
+            for rel_data in graphml_enriched_relationships:
                 source_clean = clean_quotes(str(rel_data.get('source', '')))
                 target_clean = clean_quotes(str(rel_data.get('target', '')))
                 if source_clean:
@@ -686,11 +799,14 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
 
             logger.info(f"🔍 Found {len(graphrag_entities)} unique entities in GraphRAG relationships")
 
-            # Créer des nœuds pour toutes les entités GraphRAG qui n'existent pas encore
+            # Créer des nœuds enrichis avec métadonnées GraphML pour toutes les entités GraphRAG
             existing_node_names = {node['properties']['name'] for node in selected_nodes}
-            for entity_name in graphrag_entities:
+            enriched_graphrag_nodes = enrich_nodes_with_graphml(G, list(graphrag_entities))
+
+            for enriched_node in enriched_graphrag_nodes:
+                entity_name = enriched_node['name']
                 if entity_name not in existing_node_names:
-                    # Créer un nœud synthétique pour cette entité GraphRAG
+                    # Créer un nœud synthétique enrichi avec métadonnées GraphML
                     synthetic_node = {
                         'id': entity_name,
                         'label': entity_name,
@@ -698,20 +814,25 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                         'labels': ['GraphRAG_Entity'],
                         'properties': {
                             'name': entity_name,
-                            'description': f'Entity from GraphRAG traversal: {entity_name}',
-                            'entity_type': 'GraphRAG_Entity',
+                            'description': enriched_node.get('description', f'Entity from GraphRAG traversal: {entity_name}'),
+                            'entity_type': enriched_node.get('entity_type', 'GraphRAG_Entity'),
                             'graphrag_node': True,
-                            'synthetic': True  # Marquer comme nœud synthétique
+                            'synthetic': True,
+                            # GraphML enriched metadata
+                            'clusters': enriched_node.get('clusters', ''),
+                            'source_chunks': enriched_node.get('source_chunks', ''),
+                            'has_graphml_metadata': enriched_node.get('has_graphml_metadata', False)
                         },
                         'degree': 1,
                         'centrality_score': 1
                     }
                     selected_nodes.append(synthetic_node)
                     existing_node_names.add(entity_name)
-                    logger.info(f"➕ Created synthetic GraphRAG node: {entity_name}")
+                    metadata_status = "with GraphML metadata" if enriched_node.get('has_graphml_metadata') else "basic"
+                    logger.info(f"➕ Created synthetic GraphRAG node: {entity_name} ({metadata_status})")
 
             # Maintenant créer les relations GraphRAG et s'assurer que tous les nœuds existent
-            for rel_data in graphrag_relationships:
+            for rel_data in graphml_enriched_relationships:
                 # Nettoyage des guillemets pour source et target
                 source_clean = clean_quotes(str(rel_data.get('source', '')))
                 target_clean = clean_quotes(str(rel_data.get('target', '')))
@@ -738,17 +859,26 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                         existing_node_names.add(entity_name)
                         logger.info(f"➕ Created synthetic node for relationship entity: {entity_name}")
 
+                # Enhanced relationship object with GraphML metadata
                 rel_obj = {
                     'id': f"{source_clean}_{target_clean}",
                     'type': clean_quotes(rel_data.get('type', rel_data.get('description', 'GRAPHRAG_PATH'))),
                     'source': source_clean,
                     'target': target_clean,
                     'properties': {
+                        # Original GraphRAG data
                         'description': clean_quotes(rel_data.get('description', 'GraphRAG traversal path')),
                         'weight': float(rel_data.get('weight', 1.0)),
                         'traversal_order': rel_data.get('traversal_order'),
-                        'graphrag_path': True,  # Marquer comme chemin GraphRAG
-                        'is_community_link': rel_data.get('is_community_link', False)
+                        'graphrag_path': True,
+                        'is_community_link': rel_data.get('is_community_link', False),
+
+                        # Enhanced GraphML metadata
+                        'graphml_weight': rel_data.get('graphml_weight', rel_data.get('weight', 1.0)),
+                        'graphml_description': rel_data.get('graphml_description', ''),
+                        'graphml_source_chunks': rel_data.get('graphml_source_chunks', ''),
+                        'graphml_order': rel_data.get('graphml_order', 0),
+                        'has_graphml_metadata': rel_data.get('has_graphml_metadata', False)
                     }
                 }
                 selected_relationships.append(rel_obj)
