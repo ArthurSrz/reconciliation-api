@@ -749,11 +749,6 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
 
             if matches:
                 selected_node_ids.add(node_id)
-                # Clean quotes from strings
-                def clean_quotes(value):
-                    if isinstance(value, str):
-                        return value.strip('"').strip("'")
-                    return value
 
                 # Pour les nœuds GraphRAG, utiliser le nom de l'entité comme ID pour correspondre aux relations
                 graphrag_node_id = clean_quotes(node_name)
@@ -1580,41 +1575,125 @@ def query_multi_book():
 
         logger.info(f"✅ Added {len(cross_book_relationships)} cross-book Neo4j relationships")
 
-        # Convert aggregated entities to selected_nodes format for visualization
+        # Step 1: Build comprehensive entity mapping including all entities referenced in relationships
+        entity_id_mapping = {}  # Map original IDs to final IDs
+        all_referenced_entities = set()
+
+        # First pass: collect all entities from relationships to ensure we include book entities
+        for rel in aggregated_relationships.values():
+            source_id = rel.get('source', '')
+            target_id = rel.get('target', '')
+            if source_id:
+                all_referenced_entities.add(source_id)
+            if target_id:
+                all_referenced_entities.add(target_id)
+
+        logger.info(f"📚 Found {len(all_referenced_entities)} entities referenced in relationships")
+
+        # Create entity mapping for all entities (both aggregated and referenced in relationships)
+        for entity_id in all_referenced_entities:
+            # Check if this entity is in our aggregated entities
+            if entity_id in aggregated_entities:
+                entity = aggregated_entities[entity_id]
+                entity_name = entity.get('name', entity_id)
+                final_id = entity_name if entity_name else entity_id
+            else:
+                # This is a referenced entity (likely a book) not in aggregated entities
+                # Create a minimal entity for it
+                final_id = entity_id
+                # Add to aggregated entities for consistency
+                aggregated_entities[entity_id] = {
+                    'id': entity_id,
+                    'name': entity_id,
+                    'type': 'Livres' if entity_id.startswith('LIVRE_') else 'Entity',
+                    'description': f'Referenced entity: {entity_id}',
+                    'books': [entity_id] if entity_id.startswith('LIVRE_') else [],
+                    'found_in': []
+                }
+
+            entity_id_mapping[entity_id] = final_id
+
+        logger.info(f"🔗 Comprehensive entity mapping created with {len(entity_id_mapping)} mappings")
+
+        # Step 2: Convert aggregated entities to selected_nodes format
         selected_nodes = []
         for entity in aggregated_entities.values():
+            entity_id = entity.get('id', '')
+            final_id = entity_id_mapping.get(entity_id, entity_id)
+
             node_obj = {
-                'id': entity.get('id', ''),
-                'label': entity.get('name', entity.get('id', '')),
+                'id': final_id,
+                'label': final_id,
                 'type': entity.get('type', 'Entity'),
                 'labels': [entity.get('type', 'Entity')],
                 'properties': {
-                    'name': entity.get('name', entity.get('id', '')),
+                    'name': final_id,
                     'description': entity.get('description', ''),
                     'books': entity.get('books', []),
-                    'found_in': entity.get('found_in', [])
+                    'found_in': entity.get('found_in', []),
+                    'original_id': entity_id
                 },
-                'degree': len(entity.get('books', [])),  # Use book count as degree
+                'degree': len(entity.get('books', [])),
                 'centrality_score': len(entity.get('books', []))
             }
             selected_nodes.append(node_obj)
 
-        # Convert aggregated relationships to selected_relationships format
+        logger.info(f"🔗 Entity ID mapping created with {len(entity_id_mapping)} mappings")
+
+        # Debug: show first few mappings to understand the pattern
+        if entity_id_mapping:
+            sample_mappings = list(entity_id_mapping.items())[:5]
+            logger.info(f"📝 Sample mappings: {sample_mappings}")
+
+        # Create a set of valid final entity IDs for validation
+        valid_entity_ids = {node['id'] for node in selected_nodes}
+        logger.info(f"✅ All entities included: {len(valid_entity_ids)} total entities")
+
+        # Step 3: Convert relationships with comprehensive mapping
         selected_relationships = []
+        orphaned_relations = 0
+
         for rel in aggregated_relationships.values():
-            rel_obj = {
-                'id': f"{rel.get('source', '')}_{rel.get('target', '')}",
-                'type': rel.get('description', 'RELATED'),
-                'source': rel.get('source', ''),
-                'target': rel.get('target', ''),
-                'properties': {
-                    'description': rel.get('description', 'Related to'),
-                    'books': rel.get('books', []),
-                    'found_in': rel.get('found_in', []),
-                    'weight': rel.get('weight', 1.0)
+            source_id = rel.get('source', '')
+            target_id = rel.get('target', '')
+
+            # Map the source and target IDs to final entity IDs
+            mapped_source = entity_id_mapping.get(source_id, source_id)
+            mapped_target = entity_id_mapping.get(target_id, target_id)
+
+            # Now all referenced entities should be in our valid set
+            if mapped_source in valid_entity_ids and mapped_target in valid_entity_ids:
+                rel_obj = {
+                    'id': f"{mapped_source}_{mapped_target}",
+                    'type': rel.get('description', 'RELATED'),
+                    'source': mapped_source,
+                    'target': mapped_target,
+                    'properties': {
+                        'description': rel.get('description', 'Related to'),
+                        'books': rel.get('books', []),
+                        'found_in': rel.get('found_in', []),
+                        'weight': rel.get('weight', 1.0),
+                        'original_source': source_id,
+                        'original_target': target_id
+                    }
                 }
-            }
-            selected_relationships.append(rel_obj)
+                selected_relationships.append(rel_obj)
+            else:
+                orphaned_relations += 1
+                logger.warning(f"⚠️ Still orphaned after comprehensive mapping: {source_id} -> {target_id} (mapped: {mapped_source} -> {mapped_target})")
+
+        logger.info(f"✅ Relationship mapping completed: {len(selected_relationships)} valid relationships, {orphaned_relations} orphaned")
+
+        # Final validation: ensure all relationships reference existing entities
+        final_relationships = []
+        for rel in selected_relationships:
+            if rel['source'] in valid_entity_ids and rel['target'] in valid_entity_ids:
+                final_relationships.append(rel)
+            else:
+                logger.warning(f"⚠️ Final validation failed for relation: {rel['source']} -> {rel['target']}")
+
+        selected_relationships = final_relationships
+        logger.info(f"🎯 Final result: {len(selected_nodes)} nodes, {len(selected_relationships)} relationships (no orphans)")
 
         response = {
             'success': True,
