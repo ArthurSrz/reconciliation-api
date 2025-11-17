@@ -583,22 +583,56 @@ def clean_quotes(text):
         return text.replace('"', '').replace("'", '').strip()
     return str(text)
 
-def enrich_relationships_with_graphml(G, relationships):
+def enrich_relationships_with_graphml(G, relationships, book_id=None):
     """
     Enrich relationship data with rich metadata from GraphML.
+    Added book filtering to prevent cross-book contamination.
 
     Args:
         G: NetworkX graph loaded from GraphML
         relationships: Basic relationships from debug_info
+        book_id: Current book ID for filtering (prevents cross-book contamination)
 
     Returns:
         Enriched relationships with weights, descriptions, source chunks, etc.
     """
     enriched = []
 
+    logger.info(f"🔍 Enriching {len(relationships)} relationships with GraphML metadata for book: {book_id}")
+
+    # If book_id is provided, create a filtered set of valid entity names from the current book
+    valid_entities_for_book = set()
+    if book_id:
+        # Extract valid entity names from the current book's GraphML
+        for node_id, node_data in G.nodes(data=True):
+            node_name = clean_quotes(str(node_data.get('entity_name', node_id)))
+            if node_name:
+                valid_entities_for_book.add(node_name.upper())
+
+        logger.info(f"📚 Found {len(valid_entities_for_book)} valid entities in book '{book_id}' for filtering")
+
+        # Debug: show sample valid entities
+        if valid_entities_for_book:
+            sample_entities = list(valid_entities_for_book)[:5]
+            logger.info(f"📝 Sample valid entities for {book_id}: {sample_entities}")
+
     for rel_data in relationships:
         source_clean = clean_quotes(str(rel_data.get('source', '')))
         target_clean = clean_quotes(str(rel_data.get('target', '')))
+
+        # BOOK FILTERING: Skip relationships with entities not from the current book
+        if book_id and valid_entities_for_book:
+            source_valid = any(source_clean.upper() in entity or entity in source_clean.upper()
+                             for entity in valid_entities_for_book)
+            target_valid = any(target_clean.upper() in entity or entity in target_clean.upper()
+                             for entity in valid_entities_for_book)
+
+            if not source_valid:
+                logger.debug(f"🚫 Filtering out relationship - source '{source_clean}' not in book '{book_id}'")
+                continue
+            if not target_valid:
+                logger.debug(f"🚫 Filtering out relationship - target '{target_clean}' not in book '{book_id}'")
+                continue
 
         # Default enriched relationship
         enriched_rel = dict(rel_data)  # Copy original data
@@ -624,37 +658,69 @@ def enrich_relationships_with_graphml(G, relationships):
                 'graphml_description': clean_quotes(graphml_edge_data.get('description', '')),
                 'graphml_source_chunks': graphml_edge_data.get('source_id', ''),
                 'graphml_order': int(graphml_edge_data.get('order', 0)),
-                'has_graphml_metadata': True
+                'has_graphml_metadata': True,
+                'filtered_for_book': book_id  # Track which book this was filtered for
             })
             logger.debug(f"✅ Enriched relationship {source_clean} -> {target_clean} with GraphML metadata")
         else:
-            enriched_rel['has_graphml_metadata'] = False
+            enriched_rel.update({
+                'has_graphml_metadata': False,
+                'filtered_for_book': book_id  # Track which book this was filtered for
+            })
             logger.debug(f"⚠️ No GraphML metadata found for {source_clean} -> {target_clean}")
 
         enriched.append(enriched_rel)
 
+    filtered_count = len(relationships) - len(enriched)
     logger.info(f"🔗 Enriched {len([r for r in enriched if r.get('has_graphml_metadata')])} relationships with GraphML metadata out of {len(enriched)}")
+    if filtered_count > 0:
+        logger.info(f"🚫 Filtered out {filtered_count} cross-book relationships for book '{book_id}'")
+
     return enriched
 
-def enrich_nodes_with_graphml(G, entity_names):
+def enrich_nodes_with_graphml(G, entity_names, book_id=None):
     """
     Enrich node data with rich metadata from GraphML.
+    Added book filtering to prevent cross-book contamination.
 
     Args:
         G: NetworkX graph loaded from GraphML
         entity_names: List of entity names to enrich
+        book_id: Current book ID for filtering (prevents cross-book contamination)
 
     Returns:
         Enriched nodes with descriptions, clusters, entity types, etc.
     """
     enriched_nodes = []
 
+    logger.info(f"🔍 Enriching {len(entity_names)} entities with GraphML metadata for book: {book_id}")
+
+    # If book_id is provided, create a filtered set of valid entity names from the current book
+    valid_entities_for_book = set()
+    if book_id:
+        # Extract valid entity names from the current book's GraphML
+        for node_id, node_data in G.nodes(data=True):
+            node_name = clean_quotes(str(node_data.get('entity_name', node_id)))
+            if node_name:
+                valid_entities_for_book.add(node_name.upper())
+
+        logger.info(f"📚 Found {len(valid_entities_for_book)} valid entities in book '{book_id}' for node filtering")
+
     for entity_name in entity_names:
+        # BOOK FILTERING: Skip entities not from the current book
+        if book_id and valid_entities_for_book:
+            entity_valid = any(entity_name.upper() in valid_entity or valid_entity in entity_name.upper()
+                             for valid_entity in valid_entities_for_book)
+
+            if not entity_valid:
+                logger.debug(f"🚫 Filtering out entity - '{entity_name}' not in book '{book_id}'")
+                continue
+
         # Find matching node in GraphML
         graphml_node_data = None
 
         for node_id, node_data in G.nodes(data=True):
-            node_name = clean_quotes(str(node_data.get('name', node_id)))
+            node_name = clean_quotes(str(node_data.get('entity_name', node_id)))
 
             # Check for fuzzy match
             if entity_name.upper() in node_name.upper() or node_name.upper() in entity_name.upper():
@@ -665,7 +731,8 @@ def enrich_nodes_with_graphml(G, entity_names):
         enriched_node = {
             'id': entity_name,
             'name': entity_name,
-            'graphrag_node': True
+            'graphrag_node': True,
+            'filtered_for_book': book_id  # Track which book this was filtered for
         }
 
         # Enrich with GraphML metadata if found
@@ -684,7 +751,11 @@ def enrich_nodes_with_graphml(G, entity_names):
 
         enriched_nodes.append(enriched_node)
 
+    filtered_count = len(entity_names) - len(enriched_nodes)
     logger.info(f"🎯 Enriched {len([n for n in enriched_nodes if n.get('has_graphml_metadata')])} nodes with GraphML metadata out of {len(enriched_nodes)}")
+    if filtered_count > 0:
+        logger.info(f"🚫 Filtered out {filtered_count} cross-book entities for book '{book_id}'")
+
     return enriched_nodes
 
 def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -777,12 +848,12 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
         graphrag_relationships = debug_info.get('processing_phases', {}).get('relationship_mapping', {}).get('relationships', [])
 
         if graphrag_relationships:
-            logger.info(f"🎯 Extracting {len(graphrag_relationships)} GraphRAG traversal relationships")
+            logger.info(f"🎯 Extracting {len(graphrag_relationships)} GraphRAG traversal relationships for book: {book_id}")
 
-            # Enrichir avec les métadonnées GraphML directes
-            graphml_enriched_relationships = enrich_relationships_with_graphml(G, graphrag_relationships)
+            # Enrichir avec les métadonnées GraphML directes - AVEC FILTRAGE PAR LIVRE
+            graphml_enriched_relationships = enrich_relationships_with_graphml(G, graphrag_relationships, book_id)
 
-            # Collecter toutes les entités mentionnées dans les relations GraphRAG
+            # Collecter toutes les entités mentionnées dans les relations GraphRAG FILTRÉES
             graphrag_entities = set()
             for rel_data in graphml_enriched_relationships:
                 source_clean = clean_quotes(str(rel_data.get('source', '')))
@@ -792,15 +863,33 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                 if target_clean:
                     graphrag_entities.add(target_clean)
 
-            logger.info(f"🔍 Found {len(graphrag_entities)} unique entities in GraphRAG relationships")
+            logger.info(f"🔍 Found {len(graphrag_entities)} unique entities in filtered GraphRAG relationships for book: {book_id}")
 
-            # Créer des nœuds enrichis avec métadonnées GraphML pour toutes les entités GraphRAG
+            # Ajouter validation supplémentaire pour éviter les entités "LIVRE_*" inappropriées
+            invalid_entities = set()
+            if book_id:
+                for entity in list(graphrag_entities):
+                    # Filtrer les entités "LIVRE_*" qui ne correspondent pas au book_id actuel
+                    if entity.startswith('LIVRE_') and book_id not in entity.lower():
+                        invalid_entities.add(entity)
+                        logger.warning(f"🚫 Filtering out cross-book entity: '{entity}' (current book: {book_id})")
+
+                # Retirer les entités invalides
+                graphrag_entities -= invalid_entities
+                logger.info(f"✅ After cross-book validation: {len(graphrag_entities)} entities remain for book: {book_id}")
+
+            # Créer des nœuds enrichis avec métadonnées GraphML pour toutes les entités GraphRAG - AVEC FILTRAGE PAR LIVRE
             existing_node_names = {node['properties']['name'] for node in selected_nodes}
-            enriched_graphrag_nodes = enrich_nodes_with_graphml(G, list(graphrag_entities))
+            enriched_graphrag_nodes = enrich_nodes_with_graphml(G, list(graphrag_entities), book_id)
 
             for enriched_node in enriched_graphrag_nodes:
                 entity_name = enriched_node['name']
                 if entity_name not in existing_node_names:
+                    # Validation supplémentaire pour éviter les entités cross-book
+                    if book_id and entity_name.startswith('LIVRE_') and book_id not in entity_name.lower():
+                        logger.warning(f"🚫 Skipping cross-book synthetic node creation: '{entity_name}' (current book: {book_id})")
+                        continue
+
                     # Créer un nœud synthétique enrichi avec métadonnées GraphML
                     synthetic_node = {
                         'id': entity_name,
@@ -813,6 +902,7 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                             'entity_type': enriched_node.get('entity_type', 'GraphRAG_Entity'),
                             'graphrag_node': True,
                             'synthetic': True,
+                            'book_id': book_id,  # Track which book this entity belongs to
                             # GraphML enriched metadata
                             'clusters': enriched_node.get('clusters', ''),
                             'source_chunks': enriched_node.get('source_chunks', ''),
@@ -824,7 +914,7 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                     selected_nodes.append(synthetic_node)
                     existing_node_names.add(entity_name)
                     metadata_status = "with GraphML metadata" if enriched_node.get('has_graphml_metadata') else "basic"
-                    logger.info(f"➕ Created synthetic GraphRAG node: {entity_name} ({metadata_status})")
+                    logger.info(f"➕ Created synthetic GraphRAG node: {entity_name} ({metadata_status}) for book: {book_id}")
 
             # Maintenant créer les relations GraphRAG et s'assurer que tous les nœuds existent
             for rel_data in graphml_enriched_relationships:
@@ -832,9 +922,21 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                 source_clean = clean_quotes(str(rel_data.get('source', '')))
                 target_clean = clean_quotes(str(rel_data.get('target', '')))
 
+                # Validation supplémentaire pour éviter les relations cross-book
+                if book_id:
+                    if ((source_clean.startswith('LIVRE_') and book_id not in source_clean.lower()) or
+                        (target_clean.startswith('LIVRE_') and book_id not in target_clean.lower())):
+                        logger.warning(f"🚫 Skipping cross-book relationship: '{source_clean}' -> '{target_clean}' (current book: {book_id})")
+                        continue
+
                 # Créer des nœuds synthétiques pour source et target s'ils n'existent pas
                 for entity_name in [source_clean, target_clean]:
                     if entity_name and entity_name not in existing_node_names:
+                        # Validation supplémentaire pour éviter les entités cross-book
+                        if book_id and entity_name.startswith('LIVRE_') and book_id not in entity_name.lower():
+                            logger.warning(f"🚫 Skipping cross-book synthetic node: '{entity_name}' (current book: {book_id})")
+                            continue
+
                         synthetic_node = {
                             'id': entity_name,
                             'label': entity_name,
@@ -845,14 +947,15 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                                 'description': f'Entity from GraphRAG relationship: {entity_name}',
                                 'entity_type': 'GraphRAG_Entity',
                                 'graphrag_node': True,
-                                'synthetic': True
+                                'synthetic': True,
+                                'book_id': book_id  # Track which book this entity belongs to
                             },
                             'degree': 1,
                             'centrality_score': 1
                         }
                         selected_nodes.append(synthetic_node)
                         existing_node_names.add(entity_name)
-                        logger.info(f"➕ Created synthetic node for relationship entity: {entity_name}")
+                        logger.info(f"➕ Created synthetic node for relationship entity: {entity_name} (book: {book_id})")
 
                 # Enhanced relationship object with GraphML metadata
                 rel_obj = {
@@ -1127,13 +1230,93 @@ def get_graph_relationships():
 
             logger.info(f"Successfully fetched {len(relationships)} relationships for {len(node_ids)} nodes")
 
+            # Add GraphML enrichment for better metadata
+            enriched_relationships = relationships
+            book_id = request.args.get('book_id') or (request.get_json() or {}).get('book_id')
+
+            if book_id:
+                logger.info(f"🔍 Enriching relationships with GraphML metadata for book: {book_id}")
+                try:
+                    # Load GraphML file for the specified book
+                    base_path = get_book_data_base_path()
+                    graph_path = Path(base_path) / book_id / "graph_chunk_entity_relation.graphml"
+
+                    if graph_path.exists():
+                        import networkx as nx
+                        G = nx.read_graphml(str(graph_path))
+
+                        # Convert Neo4j relationships to format expected by enrich_relationships_with_graphml
+                        # We need to fetch node labels for better matching
+                        node_labels = {}
+                        for node_id in node_ids:
+                            try:
+                                node_query = "MATCH (n) WHERE elementId(n) = $node_id RETURN n.name as name, elementId(n) as id"
+                                node_result = session.run(node_query, node_id=node_id)
+                                for node_record in node_result:
+                                    node_labels[node_record['id']] = node_record['name'] or node_record['id']
+                            except:
+                                node_labels[node_id] = node_id
+
+                        graphrag_relationships = []
+                        for rel in relationships:
+                            source_label = node_labels.get(rel['source'], rel['source'])
+                            target_label = node_labels.get(rel['target'], rel['target'])
+
+                            graphrag_relationships.append({
+                                'source': source_label,
+                                'target': target_label,
+                                'relation': rel['type'],
+                                'weight': rel['properties'].get('weight', 1.0),
+                                'description': rel['properties'].get('description', ''),
+                                'id': rel['id']
+                            })
+
+                        # Apply GraphML enrichment
+                        enriched_graphrag_rels = enrich_relationships_with_graphml(G, graphrag_relationships, book_id)
+
+                        # Merge GraphML metadata back into Neo4j relationship format
+                        for i, rel in enumerate(relationships):
+                            # Find corresponding enriched relationship
+                            source_label = node_labels.get(rel['source'], rel['source'])
+                            target_label = node_labels.get(rel['target'], rel['target'])
+
+                            # Look for matching enriched relationship
+                            for enriched_rel in enriched_graphrag_rels:
+                                if (enriched_rel.get('source') == source_label and
+                                    enriched_rel.get('target') == target_label and
+                                    enriched_rel.get('relation') == rel['type']):
+
+                                    # Merge GraphML metadata into properties
+                                    if enriched_rel.get('has_graphml_metadata'):
+                                        rel['properties'].update({
+                                            'graphml_weight': enriched_rel.get('graphml_weight'),
+                                            'graphml_description': enriched_rel.get('graphml_description'),
+                                            'graphml_source_chunks': enriched_rel.get('graphml_source_chunks'),
+                                            'graphml_order': enriched_rel.get('graphml_order'),
+                                            'has_graphml_metadata': True,
+                                            'description': enriched_rel.get('graphml_description') or rel['properties'].get('description', ''),
+                                            'weight': enriched_rel.get('graphml_weight', rel['properties'].get('weight', 1.0))
+                                        })
+                                    else:
+                                        rel['properties']['has_graphml_metadata'] = False
+                                    break
+
+                        logger.info(f"✅ Successfully merged GraphML metadata into {len(relationships)} Neo4j relationships")
+                    else:
+                        logger.warning(f"GraphML file not found for book {book_id}: {graph_path}")
+                except Exception as e:
+                    logger.warning(f"GraphML enrichment failed for book {book_id}: {e}")
+                    # Fall back to original relationships if enrichment fails
+                    enriched_relationships = relationships
+
             return jsonify({
                 'success': True,
-                'relationships': relationships,
+                'relationships': relationships,  # Now contains merged GraphML metadata
                 'count': len(relationships),
                 'input_nodes': len(node_ids),
                 'limit_applied': limit,
-                'filtered': len(relationships) >= limit
+                'filtered': len(relationships) >= limit,
+                'graphml_enriched': book_id is not None
             })
 
     except Exception as e:
@@ -1217,6 +1400,16 @@ def query_reconciled():
     book_id = data.get('book_id', None)
 
     logger.info(f"📝 Received query: '{query}', mode: {mode}, book_id: {book_id}")
+    logger.info(f"🔍 Request data keys: {list(data.keys())}")
+    logger.info(f"📚 Book selection validation - book_id: '{book_id}' (type: {type(book_id)})")
+
+    # Validation supplémentaire du book_id
+    if book_id:
+        available_books = list_available_books()
+        if book_id not in available_books:
+            logger.warning(f"⚠️ Book '{book_id}' not found in available books: {available_books}")
+        else:
+            logger.info(f"✅ Book '{book_id}' validated successfully")
 
     if not query:
         return jsonify({
