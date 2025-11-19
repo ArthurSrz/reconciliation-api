@@ -820,5 +820,149 @@ class GraphRAGQueryInterceptor:
             "animation_timeline": []
         }
 
+    async def save_query_provenance(
+        self,
+        question: str,
+        answer_text: str,
+        mode: str = "local",
+        user_id: str = "default_user"
+    ) -> str:
+        """
+        Save query provenance to Neo4j after query execution.
+        Creates Query node, QueryResult node, and USED_ENTITY relationships.
+
+        Feature: 001-interactive-graphrag-refinement - User Story 1 (T018)
+        Constitutional Principle #5: End-to-end interpretability
+
+        Args:
+            question: User's question
+            answer_text: GraphRAG generated answer
+            mode: Query mode ('local' or 'global')
+            user_id: User who submitted query
+
+        Returns:
+            query_id: ID of created Query node
+        """
+        import uuid
+        from datetime import datetime
+
+        try:
+            # Generate query ID
+            query_id = f"query-{uuid.uuid4()}"
+            result_id = f"result-{uuid.uuid4()}"
+
+            # Get analysis data
+            analysis = self.current_analysis if hasattr(self, 'current_analysis') and self.current_analysis else {}
+            entities = analysis.get('entities', [])
+            relationships = analysis.get('relationships', [])
+            communities = analysis.get('communities', [])
+
+            # Create Query node
+            with self.neo4j_driver.session() as session:
+                # 1. Create Query node
+                session.run(
+                    """
+                    CREATE (q:Query {
+                        id: $id,
+                        question: $question,
+                        answer_text: $answer_text,
+                        timestamp: datetime($timestamp),
+                        version: 1,
+                        mode: $mode,
+                        user_id: $user_id,
+                        status: 'active'
+                    })
+                    """,
+                    id=query_id,
+                    question=question,
+                    answer_text=answer_text,
+                    timestamp=datetime.now().isoformat(),
+                    mode=mode,
+                    user_id=user_id
+                )
+
+                # 2. Create QueryResult node and link to Query
+                session.run(
+                    """
+                    CREATE (qr:QueryResult {
+                        id: $result_id,
+                        query_id: $query_id,
+                        timestamp: datetime($timestamp),
+                        execution_time_ms: $execution_time_ms,
+                        entity_count: $entity_count,
+                        relationship_count: $relationship_count,
+                        community_count: $community_count
+                    })
+                    WITH qr
+                    MATCH (q:Query {id: $query_id})
+                    CREATE (q)-[:PRODUCED_RESULT]->(qr)
+                    """,
+                    result_id=result_id,
+                    query_id=query_id,
+                    timestamp=datetime.now().isoformat(),
+                    execution_time_ms=int(analysis.get('duration_ms', 0)),
+                    entity_count=len(entities),
+                    relationship_count=len(relationships),
+                    community_count=len(communities)
+                )
+
+                # 3. Create USED_ENTITY relationships for each entity
+                for idx, entity in enumerate(entities[:20]):  # Limit to top 20 entities
+                    entity_name = entity.get('name', '')
+                    if not entity_name:
+                        continue
+
+                    try:
+                        session.run(
+                            """
+                            MATCH (qr:QueryResult {id: $result_id})
+                            MATCH (e:Entity {name: $entity_name})
+                            CREATE (qr)-[:USED_ENTITY {
+                                rank: $rank,
+                                relevance_score: $relevance_score,
+                                order: $order,
+                                contribution: $contribution
+                            }]->(e)
+                            """,
+                            result_id=result_id,
+                            entity_name=entity_name,
+                            rank=idx + 1,
+                            relevance_score=float(entity.get('score', 0.5)),
+                            order=idx,
+                            contribution='direct_match' if idx < 5 else 'context'
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not link entity {entity_name}: {e}")
+
+                # 4. Link to communities if in global mode
+                if mode == 'global':
+                    for idx, community in enumerate(communities[:10]):  # Limit to top 10 communities
+                        community_id = community.get('id', '')
+                        if not community_id:
+                            continue
+
+                        try:
+                            session.run(
+                                """
+                                MATCH (qr:QueryResult {id: $result_id})
+                                MATCH (c:Community {id: $community_id})
+                                CREATE (qr)-[:CITED_COMMUNITY {
+                                    relevance_score: $relevance_score
+                                }]->(c)
+                                """,
+                                result_id=result_id,
+                                community_id=str(community_id),
+                                relevance_score=float(community.get('relevance', 0.5))
+                            )
+                        except Exception as e:
+                            logger.warning(f"Could not link community {community_id}: {e}")
+
+            logger.info(f"✅ Saved provenance for query {query_id}: {len(entities)} entities, {len(communities)} communities")
+            return query_id
+
+        except Exception as e:
+            logger.error(f"❌ Error saving query provenance: {e}")
+            return ""
+
 # Instance globale de l'intercepteur
 graphrag_interceptor = GraphRAGQueryInterceptor()

@@ -355,6 +355,7 @@ def get_local_graphrag(book_id: str = "a_rebours_huysmans"):
 from graphrag_interceptor import graphrag_interceptor
 # Using local book data functions defined above
 from endpoints.books import register_books_endpoints
+from endpoints.provenance import register_provenance_endpoints
 
 # GraphRAG Debug Interceptor (remplacé par le vrai intercepteur)
 class GraphRAGDebugInterceptor:
@@ -620,18 +621,31 @@ def enrich_relationships_with_graphml(G, relationships, book_id=None):
         source_clean = clean_quotes(str(rel_data.get('source', '')))
         target_clean = clean_quotes(str(rel_data.get('target', '')))
 
-        # BOOK FILTERING: Skip relationships with entities not from the current book
+        # Log the first 3 relationships for debugging
+        if len(enriched) < 3:
+            logger.info(f"🔍 Looking for relationship: '{source_clean}' -> '{target_clean}' (type: {rel_data.get('relation', 'unknown')})")
+
+        # BOOK FILTERING: Only enrich relationships where BOTH entities are from the current book
+        # (GraphML only contains internal book entities, not cross-book relationships)
         if book_id and valid_entities_for_book:
             source_valid = any(source_clean.upper() in entity or entity in source_clean.upper()
                              for entity in valid_entities_for_book)
             target_valid = any(target_clean.upper() in entity or entity in target_clean.upper()
                              for entity in valid_entities_for_book)
 
-            if not source_valid:
-                logger.debug(f"🚫 Filtering out relationship - source '{source_clean}' not in book '{book_id}'")
-                continue
-            if not target_valid:
-                logger.debug(f"🚫 Filtering out relationship - target '{target_clean}' not in book '{book_id}'")
+            # Skip relationships involving entities outside this book
+            # (These are cross-book relationships which GraphML doesn't contain)
+            if not source_valid or not target_valid:
+                if len(enriched) < 3:  # Log first few for debugging
+                    logger.debug(f"⏭️ Skipping cross-book relationship: '{source_clean}' -> '{target_clean}' (source_valid: {source_valid}, target_valid: {target_valid})")
+
+                # For cross-book relationships, just set no GraphML metadata
+                enriched_rel = dict(rel_data)
+                enriched_rel.update({
+                    'has_graphml_metadata': False,
+                    'filtered_for_book': book_id
+                })
+                enriched.append(enriched_rel)
                 continue
 
         # Default enriched relationship
@@ -645,10 +659,18 @@ def enrich_relationships_with_graphml(G, relationships, book_id=None):
             source_node_clean = clean_quotes(str(source_node))
             target_node_clean = clean_quotes(str(target_node))
 
-            # Check exact match or fuzzy match
-            if ((source_clean.upper() in source_node_clean.upper() and target_clean.upper() in target_node_clean.upper()) or
-                (target_clean.upper() in source_node_clean.upper() and source_clean.upper() in target_node_clean.upper())):
+            # Check exact match first
+            if ((source_clean.upper() == source_node_clean.upper() and target_clean.upper() == target_node_clean.upper()) or
+                (target_clean.upper() == source_node_clean.upper() and source_clean.upper() == target_node_clean.upper())):
                 graphml_edge_data = edge_data
+                logger.debug(f"✅ Exact GraphML match: {source_clean} -> {target_clean}")
+                break
+
+            # Then check fuzzy match (substring matching)
+            elif ((source_clean.upper() in source_node_clean.upper() and target_clean.upper() in target_node_clean.upper()) or
+                  (target_clean.upper() in source_node_clean.upper() and source_clean.upper() in target_node_clean.upper())):
+                graphml_edge_data = edge_data
+                logger.debug(f"🔍 Fuzzy GraphML match: {source_clean} -> {target_clean} matched with {source_node_clean} -> {target_node_clean}")
                 break
 
         # Enrich with GraphML metadata if found
@@ -1280,6 +1302,9 @@ def get_graph_relationships():
                             source_label = node_labels.get(rel['source'], rel['source'])
                             target_label = node_labels.get(rel['target'], rel['target'])
 
+                            # Default to no GraphML metadata
+                            rel['properties']['has_graphml_metadata'] = False
+
                             # Look for matching enriched relationship
                             for enriched_rel in enriched_graphrag_rels:
                                 if (enriched_rel.get('source') == source_label and
@@ -1304,10 +1329,18 @@ def get_graph_relationships():
                         logger.info(f"✅ Successfully merged GraphML metadata into {len(relationships)} Neo4j relationships")
                     else:
                         logger.warning(f"GraphML file not found for book {book_id}: {graph_path}")
+                        # Set all relationships to have no GraphML metadata
+                        for rel in relationships:
+                            rel['properties']['has_graphml_metadata'] = False
                 except Exception as e:
                     logger.warning(f"GraphML enrichment failed for book {book_id}: {e}")
                     # Fall back to original relationships if enrichment fails
-                    enriched_relationships = relationships
+                    for rel in relationships:
+                        rel['properties']['has_graphml_metadata'] = False
+            else:
+                # No book_id provided, set all relationships to have no GraphML metadata
+                for rel in relationships:
+                    rel['properties']['has_graphml_metadata'] = False
 
             return jsonify({
                 'success': True,
@@ -1459,8 +1492,30 @@ def query_reconciled():
                 'relations': [],
                 'communities': []
             }),
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.utcnow().isoformat(),
+            'query_id': ""  # Will be set after provenance is saved
         }
+
+        # Save query provenance to Neo4j (Feature: 001-interactive-graphrag-refinement)
+        query_id = ""
+        try:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            query_id = loop.run_until_complete(
+                graphrag_interceptor.save_query_provenance(
+                    question=query,
+                    answer_text=graphrag_data.get('answer', ''),
+                    mode=mode,
+                    user_id="default_user"
+                )
+            )
+            loop.close()
+            if query_id:
+                logger.info(f"✅ Saved query provenance: {query_id}")
+                result['query_id'] = query_id  # Add to response
+        except Exception as e:
+            logger.warning(f"⚠️ Could not save query provenance: {e}")
 
         # Always add debug information for node animation
         try:
@@ -2128,6 +2183,72 @@ def cleanup(error):
 
 # Register book endpoints
 register_books_endpoints(app)
+
+# Register provenance endpoints
+register_provenance_endpoints(app)
+
+@app.route('/chunks/<book_id>/<chunk_id>', methods=['GET'])
+def get_chunk_content(book_id, chunk_id):
+    """
+    Get the text content of a specific chunk for end-to-end traceability
+
+    Args:
+        book_id: The ID of the book (e.g., 'a_rebours_huysmans')
+        chunk_id: The ID of the chunk (e.g., 'chunk-5e8ee10d576da6545460549a4a8f8d6f')
+
+    Returns:
+        JSON with chunk content, metadata, and traceability info
+    """
+    try:
+        # Get the path to the book's text chunks file
+        base_path = get_book_data_base_path()
+        chunks_file = Path(base_path) / book_id / "kv_store_text_chunks.json"
+
+        if not chunks_file.exists():
+            return jsonify({
+                'success': False,
+                'error': f'No chunks file found for book: {book_id}'
+            }), 404
+
+        # Load the chunks file
+        with open(chunks_file, 'r', encoding='utf-8') as f:
+            chunks_data = json.load(f)
+
+        # Get the specific chunk
+        if chunk_id not in chunks_data:
+            return jsonify({
+                'success': False,
+                'error': f'Chunk not found: {chunk_id}',
+                'available_chunks': len(chunks_data)
+            }), 404
+
+        chunk_content = chunks_data[chunk_id]
+
+        # Enhance with traceability metadata
+        result = {
+            'success': True,
+            'book_id': book_id,
+            'chunk_id': chunk_id,
+            'content': chunk_content.get('content', ''),
+            'tokens': chunk_content.get('tokens', 0),
+            'chunk_order_index': chunk_content.get('chunk_order_index', 0),
+            'full_doc_id': chunk_content.get('full_doc_id', ''),
+            'traceability': {
+                'pipeline': ['Source Text', 'Text Chunking', 'GraphRAG Entity Extraction', 'GraphML Generation', 'Neo4j Import', '3D Visualization'],
+                'source_type': 'original_text',
+                'processing_chain': f'Book → Chunk → GraphRAG → GraphML → Neo4j → 3D Graph'
+            }
+        }
+
+        logger.info(f"📚 Retrieved chunk {chunk_id} from book {book_id}: {len(chunk_content.get('content', ''))} chars")
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error fetching chunk {chunk_id} from {book_id}: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
     try:
