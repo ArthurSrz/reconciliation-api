@@ -21,10 +21,16 @@ logging.getLogger("neo4j").setLevel(logging.ERROR)
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
-        # If there is already an event loop, use it.
+        # Try to get the current event loop
         loop = asyncio.get_event_loop()
+
+        # Check if the loop is closed - if so, create a new one
+        if loop.is_closed():
+            logger.info("Event loop is closed, creating a new one.")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
     except RuntimeError:
-        # If in a sub-thread, create a new event loop.
+        # If in a sub-thread or no event loop exists, create a new one
         logger.info("Creating a new event loop in a sub-thread.")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
