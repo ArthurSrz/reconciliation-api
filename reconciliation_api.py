@@ -45,7 +45,11 @@ CORS(app, origins=[
     "https://borges-library-web.vercel.app",
     "https://borges-library*.vercel.app",
     "https://*.vercel.app"
-], methods=['GET', 'POST', 'OPTIONS'], allow_headers=['Content-Type'])
+], methods=['GET', 'POST', 'OPTIONS'], allow_headers=['Content-Type', 'X-Admin-API-Key'])
+
+# Register blueprints for modular endpoints
+from endpoints.ingestion import ingestion_bp
+app.register_blueprint(ingestion_bp)
 
 # Configuration
 NEO4J_URI = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
