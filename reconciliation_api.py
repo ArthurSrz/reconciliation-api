@@ -1105,23 +1105,56 @@ def get_graph_nodes():
             })
 
         with driver.session() as session:
-            # Query to get most central/connected nodes
+            # Query to get nodes with BOOK-FIRST selection (Principle #2: Books as core entities)
+            # This ensures ALL books are loaded first, then fills remaining slots with high-centrality entities
             if centrality_type == 'degree':
                 query = """
+                // PRINCIPLE #2: Books as core entities - load ALL books first
+                MATCH (book)
+                WHERE book:BOOK OR book:Livres OR book.id STARTS WITH 'LIVRE_'
+                WITH collect(book) as books
+
+                // Get high-centrality non-book entities
                 MATCH (n)
-                WITH n, SIZE([(n)--() | 1]) as degree
+                WHERE NOT (n:BOOK OR n:Livres OR n.id STARTS WITH 'LIVRE_')
+                WITH books, n, SIZE([(n)--() | 1]) as degree
                 ORDER BY degree DESC
                 LIMIT $limit
-                RETURN n, degree
+
+                // Combine: all books + top entities
+                WITH books + collect(n) as allNodes
+                UNWIND allNodes as node
+                WITH node, SIZE([(node)--() | 1]) as degree
+                RETURN node as n, degree
+                ORDER BY
+                    CASE WHEN node:BOOK OR node:Livres OR node.id STARTS WITH 'LIVRE_' THEN 0 ELSE 1 END,
+                    degree DESC
+                LIMIT $limit
                 """
             else:
-                # For other centrality measures, use default degree for now
+                # For other centrality measures, use same book-first approach
                 query = """
+                // PRINCIPLE #2: Books as core entities - load ALL books first
+                MATCH (book)
+                WHERE book:BOOK OR book:Livres OR book.id STARTS WITH 'LIVRE_'
+                WITH collect(book) as books
+
+                // Get high-centrality non-book entities
                 MATCH (n)
-                WITH n, SIZE([(n)--() | 1]) as degree
+                WHERE NOT (n:BOOK OR n:Livres OR n.id STARTS WITH 'LIVRE_')
+                WITH books, n, SIZE([(n)--() | 1]) as degree
                 ORDER BY degree DESC
                 LIMIT $limit
-                RETURN n, degree
+
+                // Combine: all books + top entities
+                WITH books + collect(n) as allNodes
+                UNWIND allNodes as node
+                WITH node, SIZE([(node)--() | 1]) as degree
+                RETURN node as n, degree
+                ORDER BY
+                    CASE WHEN node:BOOK OR node:Livres OR node.id STARTS WITH 'LIVRE_' THEN 0 ELSE 1 END,
+                    degree DESC
+                LIMIT $limit
                 """
 
             result = session.run(query, limit=limit)
