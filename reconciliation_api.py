@@ -1105,56 +1105,39 @@ def get_graph_nodes():
             })
 
         with driver.session() as session:
-            # Query to get nodes with BOOK-FIRST selection (Principle #2: Books as core entities)
-            # This ensures ALL books are loaded first, then fills remaining slots with high-centrality entities
-            if centrality_type == 'degree':
-                query = """
-                // PRINCIPLE #2: Books as core entities - load ALL books first
-                MATCH (book)
-                WHERE book:BOOK OR book:Livres OR book.id STARTS WITH 'LIVRE_'
-                WITH collect(book) as books
+            # Query CENTERED around books (Principle #2: Books as core entities)
+            # Strategy: Load ALL books + their immediate neighbors to create book-centric view
+            # This ensures the graph visualization is always centered around books
+            query = """
+                // PRINCIPLE #2: Books as core entities - CENTER graph around books
+                // Step 1: Get all books with their degree
+                MATCH (book:BOOK)
+                WITH collect({node: book, degree: SIZE([(book)--() | 1]), isBook: true}) as allBooks
 
-                // Get high-centrality non-book entities
-                MATCH (n)
-                WHERE NOT (n:BOOK OR n:Livres OR n.id STARTS WITH 'LIVRE_')
-                WITH books, n, SIZE([(n)--() | 1]) as degree
-                ORDER BY degree DESC
-                LIMIT $limit
+                // Step 2: Get distinct neighbors of books (1-hop from books)
+                MATCH (book:BOOK)-[]-(neighbor)
+                WHERE NOT neighbor:BOOK
+                WITH allBooks, neighbor, SIZE([(neighbor)--() | 1]) as neighborDegree
+                ORDER BY neighborDegree DESC
 
-                // Combine: all books + top entities
-                WITH books + collect(n) as allNodes
-                UNWIND allNodes as node
-                WITH node, SIZE([(node)--() | 1]) as degree
-                RETURN node as n, degree
+                // Step 3: Collect distinct neighbors and limit them
+                WITH allBooks, collect(DISTINCT {node: neighbor, degree: neighborDegree, isBook: false}) as neighbors
+                // FIX: Explicitly calculate bookCount in same WITH to avoid implicit grouping
+                WITH allBooks, neighbors, size(allBooks) as bookCount,
+                     CASE WHEN size(allBooks) < $limit
+                          THEN neighbors[0..($limit - size(allBooks))]
+                          ELSE []
+                     END as limitedNeighbors
+
+                // Step 4: Combine books + limited neighbors
+                WITH allBooks + limitedNeighbors as allNodes
+                UNWIND allNodes as item
+
+                // Step 5: Return with books first
+                RETURN item.node as n, item.degree as degree
                 ORDER BY
-                    CASE WHEN node:BOOK OR node:Livres OR node.id STARTS WITH 'LIVRE_' THEN 0 ELSE 1 END,
+                    CASE WHEN item.isBook THEN 0 ELSE 1 END,
                     degree DESC
-                LIMIT $limit
-                """
-            else:
-                # For other centrality measures, use same book-first approach
-                query = """
-                // PRINCIPLE #2: Books as core entities - load ALL books first
-                MATCH (book)
-                WHERE book:BOOK OR book:Livres OR book.id STARTS WITH 'LIVRE_'
-                WITH collect(book) as books
-
-                // Get high-centrality non-book entities
-                MATCH (n)
-                WHERE NOT (n:BOOK OR n:Livres OR n.id STARTS WITH 'LIVRE_')
-                WITH books, n, SIZE([(n)--() | 1]) as degree
-                ORDER BY degree DESC
-                LIMIT $limit
-
-                // Combine: all books + top entities
-                WITH books + collect(n) as allNodes
-                UNWIND allNodes as node
-                WITH node, SIZE([(node)--() | 1]) as degree
-                RETURN node as n, degree
-                ORDER BY
-                    CASE WHEN node:BOOK OR node:Livres OR node.id STARTS WITH 'LIVRE_' THEN 0 ELSE 1 END,
-                    degree DESC
-                LIMIT $limit
                 """
 
             result = session.run(query, limit=limit)
@@ -2237,14 +2220,53 @@ def get_chunk_content(book_id, chunk_id):
         JSON with chunk content, metadata, and traceability info
     """
     try:
-        # Get the path to the book's text chunks file
+        # Try Neo4j first (chunks stored as nodes)
+        driver = get_neo4j_driver()
+        if driver:
+            try:
+                with driver.session() as session:
+                    # Query Chunk node by ID
+                    result = session.run(
+                        """
+                        MATCH (c:Chunk {id: $chunk_id})
+                        RETURN c.content as content,
+                               c.tokens as tokens,
+                               c.chunk_order_index as chunk_order_index,
+                               c.full_doc_id as full_doc_id
+                        """,
+                        chunk_id=chunk_id
+                    )
+
+                    record = result.single()
+                    if record:
+                        logger.info(f"📚 Retrieved chunk {chunk_id} from Neo4j: {len(record['content'] or '')} chars")
+                        return jsonify({
+                            'success': True,
+                            'book_id': book_id,
+                            'chunk_id': chunk_id,
+                            'content': record['content'] or '',
+                            'tokens': record['tokens'] or 0,
+                            'chunk_order_index': record['chunk_order_index'] or 0,
+                            'full_doc_id': record['full_doc_id'] or '',
+                            'source': 'neo4j',
+                            'traceability': {
+                                'pipeline': ['Source Text', 'Text Chunking', 'GraphRAG Entity Extraction', 'Neo4j Storage', '3D Visualization'],
+                                'source_type': 'neo4j_chunk_node',
+                                'processing_chain': 'Book → Chunk → GraphRAG → Neo4j → 3D Graph'
+                            }
+                        })
+            except Exception as neo_error:
+                logger.warning(f"Neo4j chunk lookup failed, trying file fallback: {neo_error}")
+
+        # Fallback: Try loading from file
         base_path = get_book_data_base_path()
         chunks_file = Path(base_path) / book_id / "kv_store_text_chunks.json"
 
         if not chunks_file.exists():
             return jsonify({
                 'success': False,
-                'error': f'No chunks file found for book: {book_id}'
+                'error': f'Chunk not found in Neo4j or files: {chunk_id}',
+                'book_id': book_id
             }), 404
 
         # Load the chunks file
@@ -2270,6 +2292,7 @@ def get_chunk_content(book_id, chunk_id):
             'tokens': chunk_content.get('tokens', 0),
             'chunk_order_index': chunk_content.get('chunk_order_index', 0),
             'full_doc_id': chunk_content.get('full_doc_id', ''),
+            'source': 'file',
             'traceability': {
                 'pipeline': ['Source Text', 'Text Chunking', 'GraphRAG Entity Extraction', 'GraphML Generation', 'Neo4j Import', '3D Visualization'],
                 'source_type': 'original_text',
@@ -2277,7 +2300,7 @@ def get_chunk_content(book_id, chunk_id):
             }
         }
 
-        logger.info(f"📚 Retrieved chunk {chunk_id} from book {book_id}: {len(chunk_content.get('content', ''))} chars")
+        logger.info(f"📚 Retrieved chunk {chunk_id} from file {book_id}: {len(chunk_content.get('content', ''))} chars")
         return jsonify(result)
 
     except Exception as e:
