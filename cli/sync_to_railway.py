@@ -33,7 +33,7 @@ import httpx
 
 
 BOOK_DATA_DIR = "/Users/arthursarazin/Documents/nano-graphrag/book_data"
-RAILWAY_API_URL = os.getenv('GRAPHRAG_API_URL', 'https://borgesgraph-production.up.railway.app')
+RAILWAY_API_URL = os.getenv('GRAPHRAG_API_URL', 'https://reconciliation-api-production.up.railway.app')
 ADMIN_API_KEY = os.getenv('ADMIN_API_KEY', '')
 
 

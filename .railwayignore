@@ -1,0 +1,10 @@
+# Ignore large book data - stored in Railway volume instead
+book_data/
+gdrive_data/
+gdrive_correct_data/
+*.pyc
+__pycache__/
+.env
+.git/
+*.zip
+*.part

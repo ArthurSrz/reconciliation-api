@@ -126,16 +126,17 @@ class Neo4jSyncService:
                     clean_id = node_id.strip('"')
                     entity_type = node_data.get('entity_type', 'UNKNOWN').strip('"')
                     description = node_data.get('description', '')
-                    source_chunks = node_data.get('source_id', '')
+                    source_chunks = node_data.get('source_id', '')  # This contains chunk IDs from GraphML
                     clusters = node_data.get('clusters', '')
 
+                    # FIX: Preserve chunk IDs in source_id, store book separately
                     await session.run(
                         """
                         MERGE (e:Entity {id: $entity_id})
                         SET e.entity_type = $entity_type,
                             e.description = $description,
-                            e.source_id = $book_id,
-                            e.source_chunks = $source_chunks,
+                            e.source_id = $source_chunks,
+                            e.book_id = $book_id,
                             e.clusters = $clusters,
                             e.book_dir = $book_dir
                         WITH e
@@ -162,8 +163,9 @@ class Neo4jSyncService:
                     clean_target = target.strip('"')
                     weight = float(edge_data.get('weight', 1.0))
                     description = edge_data.get('description', '')
-                    source_chunks = edge_data.get('source_id', '')
+                    source_chunks = edge_data.get('source_id', '')  # Chunk IDs from GraphML
 
+                    # FIX: Preserve chunk IDs in source_id for relationships too
                     await session.run(
                         """
                         MATCH (s:Entity {id: $source})
@@ -171,8 +173,8 @@ class Neo4jSyncService:
                         MERGE (s)-[r:RELATED_TO]->(t)
                         SET r.weight = $weight,
                             r.description = $description,
-                            r.source_id = $book_id,
-                            r.source_chunks = $source_chunks
+                            r.source_id = $source_chunks,
+                            r.book_id = $book_id
                         """,
                         source=clean_source,
                         target=clean_target,
@@ -242,13 +244,33 @@ class Neo4jSyncService:
                     except Exception as e:
                         stats['errors'].append(f"Chunk {chunk_id}: {str(e)}")
 
+            # Step 5.5: Create Entity→Chunk relationships based on source_id
+            print("   Creating Entity→Chunk relationships...")
+            entity_chunk_result = await session.run(
+                """
+                MATCH (e:Entity)
+                WHERE e.book_id = $book_id AND e.source_id IS NOT NULL AND e.source_id <> ''
+                WITH e, split(e.source_id, '<SEP>') as chunk_ids
+                UNWIND chunk_ids as chunk_id_raw
+                WITH e, trim(chunk_id_raw) as chunk_id
+                WHERE chunk_id <> ''
+                MATCH (c:Chunk {id: chunk_id})
+                MERGE (e)-[r:EXTRACTED_FROM]->(c)
+                SET r.created_at = datetime()
+                RETURN count(r) as relationships_created
+                """,
+                book_id=book_id
+            )
+            record = await entity_chunk_result.single()
+            stats['entity_chunk_links'] = record['relationships_created'] if record else 0
+
             # Step 6: Create inter-book links
             print("   Creating inter-book entity links...")
             inter_book_result = await session.run(
                 """
-                MATCH (new_entity:Entity {source_id: $book_id})
+                MATCH (new_entity:Entity {book_id: $book_id})
                 MATCH (existing:Entity)
-                WHERE existing.source_id <> $book_id
+                WHERE existing.book_id <> $book_id
                 AND toLower(new_entity.id) = toLower(existing.id)
                 MERGE (new_entity)-[r:SAME_AS]->(existing)
                 SET r.inter_book = true,
@@ -377,6 +399,7 @@ def main():
     print(f"   Relationships synced: {stats['edges_processed']}")
     print(f"   Communities synced: {stats['communities_synced']}")
     print(f"   Chunks synced: {stats['chunks_synced']}")
+    print(f"   Entity→Chunk links: {stats.get('entity_chunk_links', 0)}")
     print(f"   Inter-book links: {stats.get('inter_book_links', 0)}")
 
     if stats['errors']:
