@@ -20,7 +20,7 @@ import re
 import csv
 from nano_graphrag import GraphRAG, QueryParam
 from io import StringIO
-from functools import wraps
+from functools import wraps, lru_cache
 import time
 from dotenv import load_dotenv
 from pathlib import Path
@@ -28,6 +28,34 @@ import networkx as nx
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Cache for chunks data - LRU cache to avoid reloading huge JSON files
+@lru_cache(maxsize=20)  # Cache up to 20 book chunk files
+def load_chunks_file(book_id: str) -> Dict[str, Any]:
+    """
+    Load chunks data for a book with caching to improve performance.
+
+    Args:
+        book_id: Book identifier
+
+    Returns:
+        Dictionary of chunks indexed by chunk_id
+
+    Note:
+        Uses LRU cache to avoid repeatedly loading large JSON files.
+        Cache size of 20 covers all books (9 books) with room for reloads.
+    """
+    base_path = get_book_data_base_path()
+    chunks_file = Path(base_path) / book_id / "kv_store_text_chunks.json"
+
+    if not chunks_file.exists():
+        raise FileNotFoundError(f"Chunks file not found for book: {book_id}")
+
+    with open(chunks_file, 'r', encoding='utf-8') as f:
+        chunks_data = json.load(f)
+
+    logger.info(f"📦 Loaded {len(chunks_data)} chunks for {book_id} (cached)")
+    return chunks_data
 
 # Configure logging
 logging.basicConfig(
@@ -2258,20 +2286,15 @@ def get_chunk_content(book_id, chunk_id):
             except Exception as neo_error:
                 logger.warning(f"Neo4j chunk lookup failed, trying file fallback: {neo_error}")
 
-        # Fallback: Try loading from file
-        base_path = get_book_data_base_path()
-        chunks_file = Path(base_path) / book_id / "kv_store_text_chunks.json"
-
-        if not chunks_file.exists():
+        # Fallback: Try loading from cached file
+        try:
+            chunks_data = load_chunks_file(book_id)
+        except FileNotFoundError:
             return jsonify({
                 'success': False,
                 'error': f'Chunk not found in Neo4j or files: {chunk_id}',
                 'book_id': book_id
             }), 404
-
-        # Load the chunks file
-        with open(chunks_file, 'r', encoding='utf-8') as f:
-            chunks_data = json.load(f)
 
         # Get the specific chunk
         if chunk_id not in chunks_data:
