@@ -71,6 +71,7 @@ CORS(app, origins=[
     "http://localhost:3000",
     "http://localhost:3001",
     "https://borges-library-web.vercel.app",
+    "https://le-graphe-de-borges.vercel.app",  # Production domain
     "https://borges-library*.vercel.app",
     "https://*.vercel.app"
 ], methods=['GET', 'POST', 'OPTIONS'], allow_headers=['Content-Type', 'X-Admin-API-Key'])
