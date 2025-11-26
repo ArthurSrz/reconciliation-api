@@ -1237,7 +1237,7 @@ def get_graph_relationships():
     """
     # Get parameters from GET or POST
     if request.method == 'POST':
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         node_ids_param = data.get('node_ids', '')
         limit = min(int(data.get('limit', 10000)), 50000)
 
@@ -1315,7 +1315,7 @@ def get_graph_relationships():
 
             # Add GraphML enrichment for better metadata
             enriched_relationships = relationships
-            book_id = request.args.get('book_id') or (request.get_json() or {}).get('book_id')
+            book_id = request.args.get('book_id') or (request.get_json(silent=True) or {}).get('book_id')
 
             if book_id:
                 logger.info(f"🔍 Enriching relationships with GraphML metadata for book: {book_id}")
