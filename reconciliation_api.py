@@ -708,7 +708,7 @@ def enrich_relationships_with_graphml(G, relationships, book_id=None):
         # Enrich with GraphML metadata if found
         if graphml_edge_data:
             enriched_rel.update({
-                'graphml_weight': float(graphml_edge_data.get('weight', 1.0)),
+                'graphml_weight': float(graphml_edge_data.get('weight') or 1.0),
                 'graphml_description': clean_quotes(graphml_edge_data.get('description', '')),
                 'graphml_source_chunks': graphml_edge_data.get('source_id', ''),
                 'graphml_order': int(graphml_edge_data.get('order', 0)),
@@ -888,7 +888,10 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                         'description': clean_quotes(node_data.get('description', '')),
                         'entity_type': clean_quotes(node_data.get('entity_type', 'Entity')),
                         'graphrag_node': True,  # Marquer comme nœud GraphRAG
-                        'original_neo4j_id': clean_quotes(str(node_id))  # Garder l'ID original pour référence
+                        'original_neo4j_id': clean_quotes(str(node_id)),  # Garder l'ID original pour référence
+                        # Book context for chunk retrieval (required by frontend)
+                        'book_id': book_id,
+                        'book_dir': book_id  # Alias for compatibility
                     },
                     'degree': G.degree(node_id),
                     'centrality_score': G.degree(node_id)
@@ -1020,7 +1023,7 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                     'properties': {
                         # Original GraphRAG data
                         'description': clean_quotes(rel_data.get('description', 'GraphRAG traversal path')),
-                        'weight': float(rel_data.get('weight', 1.0)),
+                        'weight': float(rel_data.get('weight') or 1.0),
                         'traversal_order': rel_data.get('traversal_order'),
                         'graphrag_path': True,
                         'is_community_link': rel_data.get('is_community_link', False),
@@ -1030,7 +1033,11 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                         'graphml_description': rel_data.get('graphml_description', ''),
                         'graphml_source_chunks': rel_data.get('graphml_source_chunks', ''),
                         'graphml_order': rel_data.get('graphml_order', 0),
-                        'has_graphml_metadata': rel_data.get('has_graphml_metadata', False)
+                        'has_graphml_metadata': rel_data.get('has_graphml_metadata', False),
+
+                        # Book context for chunk retrieval (required by frontend)
+                        'book_id': book_id,
+                        'book_dir': book_id  # Alias for compatibility
                     }
                 }
                 selected_relationships.append(rel_obj)
@@ -1046,7 +1053,10 @@ def extract_selected_nodes_from_graphrag(book_id: str, debug_info: Dict[str, Any
                         'target': clean_quotes(str(target)),
                         'properties': {
                             'description': clean_quotes(edge_data.get('weight_label', 'Related to')),
-                            'weight': float(edge_data.get('weight', 1.0))
+                            'weight': float(edge_data.get('weight') or 1.0),
+                            # Book context for chunk retrieval (required by frontend)
+                            'book_id': book_id,
+                            'book_dir': book_id  # Alias for compatibility
                         }
                     }
                     selected_relationships.append(rel_obj)
@@ -1681,7 +1691,7 @@ def search_nodes_from_graphrag():
                         'target': target,
                         'properties': {
                             'description': edge_data.get('weight_label', 'Related to'),
-                            'weight': float(edge_data.get('weight', 1.0))
+                            'weight': float(edge_data.get('weight') or 1.0)
                         }
                     }
                     relationships.append(rel_obj)
@@ -1787,6 +1797,18 @@ def query_multi_book():
                 # Always collect debug_info for entity aggregation in multi-book mode
                 debug_info = graphrag_interceptor.get_real_debug_info()
 
+                # NEW: Extract enriched nodes/relationships with GraphML metadata (like single-book mode)
+                # This adds book_id, book_dir, graphml_source_chunks for chunk loading in EntityDetailModal
+                book_selected_nodes = []
+                book_selected_relationships = []
+                try:
+                    selected_graph_data = extract_selected_nodes_from_graphrag(book_id, debug_info)
+                    book_selected_nodes = selected_graph_data.get('nodes', [])
+                    book_selected_relationships = selected_graph_data.get('relationships', [])
+                    logger.info(f"📦 {book_id}: Enriched {len(book_selected_nodes)} nodes, {len(book_selected_relationships)} relationships with GraphML chunks")
+                except Exception as enrich_error:
+                    logger.warning(f"⚠️ Could not enrich nodes for {book_id}: {enrich_error}")
+
                 # Initialize empty lists for tracking
                 entities = []
                 relationships = []
@@ -1796,7 +1818,9 @@ def query_multi_book():
                     'book_id': book_id,
                     'answer': result,
                     'processing_time': book_processing_time,
-                    'debug_info': debug_info
+                    'debug_info': debug_info,
+                    'selected_nodes': book_selected_nodes,
+                    'selected_relationships': book_selected_relationships
                 }
 
                 if debug_info:
@@ -1870,6 +1894,55 @@ def query_multi_book():
                 }
 
         logger.info(f"✅ Added {len(cross_book_relationships)} cross-book Neo4j relationships")
+
+        # NEW: Aggregate enriched nodes and relationships from all book_results
+        # These have book_id, book_dir, and graphml_source_chunks for EntityDetailModal chunk loading
+        enriched_nodes_map = {}  # Deduplicate by node id
+        enriched_relationships_map = {}  # Deduplicate by source--target
+
+        for book_result in all_results:
+            if 'error' in book_result:
+                continue
+
+            # Aggregate enriched nodes
+            for node in book_result.get('selected_nodes', []):
+                node_id = node.get('id', '')
+                if node_id:
+                    if node_id not in enriched_nodes_map:
+                        # First occurrence - store the node
+                        enriched_nodes_map[node_id] = {**node}
+                        # Ensure books array exists
+                        if 'properties' not in enriched_nodes_map[node_id]:
+                            enriched_nodes_map[node_id]['properties'] = {}
+                        enriched_nodes_map[node_id]['properties']['books'] = [book_result['book_id']]
+                    else:
+                        # Node exists in multiple books - add to books array
+                        existing_books = enriched_nodes_map[node_id].get('properties', {}).get('books', [])
+                        if book_result['book_id'] not in existing_books:
+                            existing_books.append(book_result['book_id'])
+                            enriched_nodes_map[node_id]['properties']['books'] = existing_books
+
+            # Aggregate enriched relationships
+            for rel in book_result.get('selected_relationships', []):
+                source = rel.get('source', '')
+                target = rel.get('target', '')
+                rel_key = f"{source}--{target}"
+                if source and target:
+                    if rel_key not in enriched_relationships_map:
+                        # First occurrence - store the relationship with its GraphML chunks
+                        enriched_relationships_map[rel_key] = {**rel}
+                        # Ensure books array exists
+                        if 'properties' not in enriched_relationships_map[rel_key]:
+                            enriched_relationships_map[rel_key]['properties'] = {}
+                        enriched_relationships_map[rel_key]['properties']['books'] = [book_result['book_id']]
+                    else:
+                        # Relationship exists in multiple books - add to books array
+                        existing_books = enriched_relationships_map[rel_key].get('properties', {}).get('books', [])
+                        if book_result['book_id'] not in existing_books:
+                            existing_books.append(book_result['book_id'])
+                            enriched_relationships_map[rel_key]['properties']['books'] = existing_books
+
+        logger.info(f"📦 Aggregated {len(enriched_nodes_map)} enriched nodes, {len(enriched_relationships_map)} enriched relationships with GraphML chunks")
 
         # Step 1: Build comprehensive entity mapping including all entities referenced in relationships
         entity_id_mapping = {}  # Map original IDs to final IDs
@@ -1990,6 +2063,15 @@ def query_multi_book():
 
         selected_relationships = final_relationships
         logger.info(f"🎯 Final result: {len(selected_nodes)} nodes, {len(selected_relationships)} relationships (no orphans)")
+
+        # NEW: Use enriched nodes/relationships which have book_dir and graphml_source_chunks
+        # This enables EntityDetailModal chunk loading (Principle #5: End-to-end interpretability)
+        if enriched_nodes_map:
+            selected_nodes = list(enriched_nodes_map.values())
+            logger.info(f"📦 Using {len(selected_nodes)} enriched nodes with GraphML metadata for chunk loading")
+        if enriched_relationships_map:
+            selected_relationships = list(enriched_relationships_map.values())
+            logger.info(f"📦 Using {len(selected_relationships)} enriched relationships with graphml_source_chunks for chunk loading")
 
         response = {
             'success': True,
@@ -2235,6 +2317,85 @@ register_books_endpoints(app)
 # Register provenance endpoints
 register_provenance_endpoints(app)
 
+@app.route('/chunks/find/<chunk_id>', methods=['GET'])
+def find_chunk(chunk_id):
+    """
+    Find a chunk by ID without knowing which book it belongs to.
+    Searches all books until the chunk is found.
+
+    Args:
+        chunk_id: The ID of the chunk (e.g., 'chunk-5e8ee10d576da6545460549a4a8f8d6f')
+
+    Returns:
+        JSON with chunk content and the book it was found in
+    """
+    try:
+        # Try Neo4j first
+        driver = get_neo4j_driver()
+        if driver:
+            try:
+                with driver.session() as session:
+                    result = session.run(
+                        """
+                        MATCH (c:Chunk {id: $chunk_id})
+                        OPTIONAL MATCH (b:BOOK)-[:HAS_CHUNK]->(c)
+                        RETURN c.content as content,
+                               c.tokens as tokens,
+                               c.chunk_order_index as chunk_order_index,
+                               c.full_doc_id as full_doc_id,
+                               b.book_dir as book_dir
+                        """,
+                        chunk_id=chunk_id
+                    )
+                    record = result.single()
+                    if record and record['content']:
+                        book_dir = record['book_dir'] or 'unknown'
+                        logger.info(f"📚 Found chunk {chunk_id} in Neo4j (book: {book_dir})")
+                        return jsonify({
+                            'success': True,
+                            'found_in': book_dir,
+                            'chunk_id': chunk_id,
+                            'content': record['content'],
+                            'tokens': record['tokens'] or 0,
+                            'chunk_order_index': record['chunk_order_index'] or 0,
+                            'full_doc_id': record['full_doc_id'] or '',
+                            'source': 'neo4j'
+                        })
+            except Exception as neo_error:
+                logger.warning(f"Neo4j chunk search failed: {neo_error}")
+
+        # Search all books
+        available_books = list_available_books()
+        for book_dir in available_books:
+            try:
+                chunks_data = load_chunks_file(book_dir)
+                if chunk_id in chunks_data:
+                    chunk_content = chunks_data[chunk_id]
+                    logger.info(f"✅ Found chunk {chunk_id} in {book_dir}")
+                    return jsonify({
+                        'success': True,
+                        'found_in': book_dir,
+                        'chunk_id': chunk_id,
+                        'content': chunk_content.get('content', ''),
+                        'tokens': chunk_content.get('tokens', 0),
+                        'chunk_order_index': chunk_content.get('chunk_order_index', 0),
+                        'full_doc_id': chunk_content.get('full_doc_id', ''),
+                        'source': 'file'
+                    })
+            except FileNotFoundError:
+                continue
+
+        return jsonify({
+            'success': False,
+            'error': f'Chunk not found in any book: {chunk_id}',
+            'searched_books': available_books
+        }), 404
+
+    except Exception as e:
+        logger.error(f"Error finding chunk {chunk_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/chunks/<book_id>/<chunk_id>', methods=['GET'])
 def get_chunk_content(book_id, chunk_id):
     """
@@ -2253,24 +2414,48 @@ def get_chunk_content(book_id, chunk_id):
         if driver:
             try:
                 with driver.session() as session:
-                    # Query Chunk node by ID
+                    # Query Chunk node by ID and find its actual book via HAS_CHUNK relationship
                     result = session.run(
                         """
                         MATCH (c:Chunk {id: $chunk_id})
+                        OPTIONAL MATCH (b:BOOK)-[:HAS_CHUNK]->(c)
                         RETURN c.content as content,
                                c.tokens as tokens,
                                c.chunk_order_index as chunk_order_index,
-                               c.full_doc_id as full_doc_id
+                               c.full_doc_id as full_doc_id,
+                               b.book_dir as actual_book_dir,
+                               b.id as actual_book_id
                         """,
                         chunk_id=chunk_id
                     )
 
                     record = result.single()
-                    if record:
-                        logger.info(f"📚 Retrieved chunk {chunk_id} from Neo4j: {len(record['content'] or '')} chars")
+                    if record and record['content']:
+                        # Use actual book from relationship, or search files if not found
+                        actual_book = record['actual_book_dir'] or record['actual_book_id']
+                        if actual_book and actual_book.startswith('LIVRE_'):
+                            # Convert LIVRE_Chien Blanc -> chien_blanc_gary by searching files
+                            actual_book = None  # Will fallback to file search below
+
+                        # If no book found in Neo4j, search files to find the right one
+                        found_in_book = actual_book
+                        if not found_in_book:
+                            available_books = list_available_books()
+                            for book_dir in available_books:
+                                try:
+                                    chunks_data = load_chunks_file(book_dir)
+                                    if chunk_id in chunks_data:
+                                        found_in_book = book_dir
+                                        logger.info(f"✅ Found chunk {chunk_id} belongs to {book_dir}")
+                                        break
+                                except FileNotFoundError:
+                                    continue
+
+                        logger.info(f"📚 Retrieved chunk {chunk_id} from Neo4j: {len(record['content'] or '')} chars, found_in: {found_in_book}")
                         return jsonify({
                             'success': True,
-                            'book_id': book_id,
+                            'book_id': book_id,  # Requested book
+                            'found_in': found_in_book or book_id,  # Actual book where chunk belongs
                             'chunk_id': chunk_id,
                             'content': record['content'] or '',
                             'tokens': record['tokens'] or 0,
@@ -2287,29 +2472,49 @@ def get_chunk_content(book_id, chunk_id):
                 logger.warning(f"Neo4j chunk lookup failed, trying file fallback: {neo_error}")
 
         # Fallback: Try loading from cached file
+        # First try the specified book_id
+        found_in_book = None
+        chunk_content = None
+
         try:
             chunks_data = load_chunks_file(book_id)
+            if chunk_id in chunks_data:
+                chunk_content = chunks_data[chunk_id]
+                found_in_book = book_id
         except FileNotFoundError:
+            pass  # Will try other books
+
+        # If not found in specified book, search ALL books (for inter-book entities)
+        if chunk_content is None:
+            logger.info(f"🔍 Chunk {chunk_id} not found in {book_id}, searching all books...")
+            available_books = list_available_books()
+            for other_book in available_books:
+                if other_book == book_id:
+                    continue  # Already tried this one
+                try:
+                    chunks_data = load_chunks_file(other_book)
+                    if chunk_id in chunks_data:
+                        chunk_content = chunks_data[chunk_id]
+                        found_in_book = other_book
+                        logger.info(f"✅ Found chunk {chunk_id} in {other_book} (not in requested {book_id})")
+                        break
+                except FileNotFoundError:
+                    continue
+
+        # If still not found, return 404
+        if chunk_content is None:
             return jsonify({
                 'success': False,
-                'error': f'Chunk not found in Neo4j or files: {chunk_id}',
-                'book_id': book_id
+                'error': f'Chunk not found in Neo4j or any book files: {chunk_id}',
+                'book_id': book_id,
+                'searched_books': list_available_books()
             }), 404
-
-        # Get the specific chunk
-        if chunk_id not in chunks_data:
-            return jsonify({
-                'success': False,
-                'error': f'Chunk not found: {chunk_id}',
-                'available_chunks': len(chunks_data)
-            }), 404
-
-        chunk_content = chunks_data[chunk_id]
 
         # Enhance with traceability metadata
         result = {
             'success': True,
-            'book_id': book_id,
+            'book_id': book_id,  # Original requested book
+            'found_in': found_in_book,  # Actual book where chunk was found
             'chunk_id': chunk_id,
             'content': chunk_content.get('content', ''),
             'tokens': chunk_content.get('tokens', 0),
@@ -2323,7 +2528,7 @@ def get_chunk_content(book_id, chunk_id):
             }
         }
 
-        logger.info(f"📚 Retrieved chunk {chunk_id} from file {book_id}: {len(chunk_content.get('content', ''))} chars")
+        logger.info(f"📚 Retrieved chunk {chunk_id} from file {found_in_book}: {len(chunk_content.get('content', ''))} chars")
         return jsonify(result)
 
     except Exception as e:

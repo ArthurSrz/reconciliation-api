@@ -16,6 +16,7 @@ BOOKS = [
     {"dir": "racines_ciel_gary", "title": "Les Racines du Ciel", "author": "Romain Gary", "genre": "Fiction"},
     {"dir": "tilleul_soir_anglade", "title": "Le Tilleul du Soir", "author": "Jean Anglade", "genre": "Fiction"},
     {"dir": "vallee_sans_hommes_frison", "title": "La Vallée Sans Hommes", "author": "Frison-Roche", "genre": "Fiction"},
+    {"dir": "villa_triste_modiano", "title": "Villa Triste", "author": "Patrick Modiano", "genre": "Fiction"},
 ]
 
 BOOK_DATA_DIR = "/Users/arthursarazin/Documents/nano-graphrag/book_data"

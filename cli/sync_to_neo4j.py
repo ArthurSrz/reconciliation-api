@@ -86,8 +86,10 @@ class Neo4jSyncService:
         print("   Loading GraphML...")
         G = nx.read_graphml(str(graphml_path))
 
-        # Generate book ID from directory name
+        # Generate book ID from title and extract short book_dir name
         book_id = f"LIVRE_{title}"
+        # Extract short directory name (last segment of path) per data-model.md
+        short_book_dir = book_path.name
 
         # Stats
         stats = {
@@ -108,14 +110,14 @@ class Neo4jSyncService:
                 SET b.title = $title,
                     b.author = $author,
                     b.genre = $genre,
-                    b.source_dir = $source_dir,
+                    b.book_dir = $book_dir,
                     b.synced_at = datetime()
                 """,
                 book_id=book_id,
                 title=title,
                 author=author,
                 genre=genre,
-                source_dir=str(book_dir)
+                book_dir=short_book_dir
             )
 
             # Step 2: Create Entity nodes
@@ -129,14 +131,16 @@ class Neo4jSyncService:
                     source_chunks = node_data.get('source_id', '')  # This contains chunk IDs from GraphML
                     clusters = node_data.get('clusters', '')
 
-                    # FIX: Preserve chunk IDs in source_id, store book separately
+                    # Per data-model.md: no book_id property, use CONTAINS_ENTITY relationship
+                    # book_dir uses short directory name (portable)
+                    # IMPORTANT: 'name' property is required for display in the UI
                     await session.run(
                         """
                         MERGE (e:Entity {id: $entity_id})
-                        SET e.entity_type = $entity_type,
+                        SET e.name = $entity_name,
+                            e.entity_type = $entity_type,
                             e.description = $description,
                             e.source_id = $source_chunks,
-                            e.book_id = $book_id,
                             e.clusters = $clusters,
                             e.book_dir = $book_dir
                         WITH e
@@ -144,12 +148,13 @@ class Neo4jSyncService:
                         MERGE (b)-[:CONTAINS_ENTITY]->(e)
                         """,
                         entity_id=clean_id,
+                        entity_name=clean_id,  # name = id (the entity's display name)
                         entity_type=entity_type,
                         description=description,
                         book_id=book_id,
                         source_chunks=source_chunks,
                         clusters=clusters,
-                        book_dir=str(book_dir)
+                        book_dir=short_book_dir
                     )
                     stats['nodes_processed'] += 1
                 except Exception as e:
@@ -165,7 +170,7 @@ class Neo4jSyncService:
                     description = edge_data.get('description', '')
                     source_chunks = edge_data.get('source_id', '')  # Chunk IDs from GraphML
 
-                    # FIX: Preserve chunk IDs in source_id for relationships too
+                    # Per data-model.md: relationship uses book_dir (short name), not book_id
                     await session.run(
                         """
                         MATCH (s:Entity {id: $source})
@@ -174,13 +179,13 @@ class Neo4jSyncService:
                         SET r.weight = $weight,
                             r.description = $description,
                             r.source_id = $source_chunks,
-                            r.book_id = $book_id
+                            r.book_dir = $book_dir
                         """,
                         source=clean_source,
                         target=clean_target,
                         weight=weight,
                         description=description,
-                        book_id=book_id,
+                        book_dir=short_book_dir,
                         source_chunks=source_chunks
                     )
                     stats['edges_processed'] += 1
@@ -249,7 +254,7 @@ class Neo4jSyncService:
             entity_chunk_result = await session.run(
                 """
                 MATCH (e:Entity)
-                WHERE e.book_id = $book_id AND e.source_id IS NOT NULL AND e.source_id <> ''
+                WHERE e.book_dir = $book_dir AND e.source_id IS NOT NULL AND e.source_id <> ''
                 WITH e, split(e.source_id, '<SEP>') as chunk_ids
                 UNWIND chunk_ids as chunk_id_raw
                 WITH e, trim(chunk_id_raw) as chunk_id
@@ -259,25 +264,25 @@ class Neo4jSyncService:
                 SET r.created_at = datetime()
                 RETURN count(r) as relationships_created
                 """,
-                book_id=book_id
+                book_dir=short_book_dir
             )
             record = await entity_chunk_result.single()
             stats['entity_chunk_links'] = record['relationships_created'] if record else 0
 
-            # Step 6: Create inter-book links
+            # Step 6: Create inter-book links (using book_dir per data-model.md)
             print("   Creating inter-book entity links...")
             inter_book_result = await session.run(
                 """
-                MATCH (new_entity:Entity {book_id: $book_id})
+                MATCH (new_entity:Entity {book_dir: $book_dir})
                 MATCH (existing:Entity)
-                WHERE existing.book_id <> $book_id
+                WHERE existing.book_dir <> $book_dir
                 AND toLower(new_entity.id) = toLower(existing.id)
                 MERGE (new_entity)-[r:SAME_AS]->(existing)
                 SET r.inter_book = true,
                     r.created_at = datetime()
                 RETURN count(r) as link_count
                 """,
-                book_id=book_id
+                book_dir=short_book_dir
             )
             record = await inter_book_result.single()
             stats['inter_book_links'] = record['link_count'] if record else 0
