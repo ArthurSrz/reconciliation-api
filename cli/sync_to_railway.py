@@ -24,7 +24,6 @@ import tarfile
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-import base64
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -76,47 +75,43 @@ async def sync_book_to_railway(
     archive_size = os.path.getsize(tar_path)
     print(f"   Archive size: {archive_size / 1024:.1f} KB")
 
-    # Read and encode archive
-    with open(tar_path, 'rb') as f:
-        archive_data = base64.b64encode(f.read()).decode('utf-8')
+    # Send to Railway using multipart file upload (more reliable for large files)
+    print("   Uploading to Railway volume...")
+    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=60.0)) as client:
+        with open(tar_path, 'rb') as f:
+            files = {'file': (f'{book_path.name}.tar.gz', f, 'application/gzip')}
+            data = {'book_name': book_path.name}
 
-    # Clean up temp file
+            response = await client.post(
+                f"{api_url}/admin/upload-book-data",
+                headers={
+                    'X-Admin-API-Key': admin_key,
+                },
+                files=files,
+                data=data
+            )
+
+    # Clean up temp file after upload
     os.unlink(tar_path)
 
-    # Send to Railway
-    print("   Uploading to Railway volume...")
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        response = await client.post(
-            f"{api_url}/admin/upload-book-data",
-            headers={
-                'X-Admin-API-Key': admin_key,
-                'Content-Type': 'application/json'
-            },
-            json={
-                'book_name': book_path.name,
-                'archive_data': archive_data,
-                'archive_format': 'tar.gz'
-            }
-        )
-
-        if response.status_code == 200:
-            result = response.json()
-            print(f"   ✅ Upload successful!")
-            return {
-                'book_name': book_path.name,
-                'status': 'success',
-                'message': result.get('message', 'Uploaded successfully'),
-                'volume_path': result.get('volume_path')
-            }
-        else:
-            error_msg = response.text
-            print(f"   ❌ Upload failed: {error_msg}")
-            return {
-                'book_name': book_path.name,
-                'status': 'error',
-                'error': error_msg,
-                'status_code': response.status_code
-            }
+    if response.status_code == 200:
+        result = response.json()
+        print(f"   ✅ Upload successful!")
+        return {
+            'book_name': book_path.name,
+            'status': 'success',
+            'message': result.get('message', 'Uploaded successfully'),
+            'volume_path': result.get('volume_path')
+        }
+    else:
+        error_msg = response.text
+        print(f"   ❌ Upload failed: {error_msg}")
+        return {
+            'book_name': book_path.name,
+            'status': 'error',
+            'error': error_msg,
+            'status_code': response.status_code
+        }
 
 
 async def sync_all_books(

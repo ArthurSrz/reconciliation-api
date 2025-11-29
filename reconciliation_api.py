@@ -68,6 +68,9 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# Configure max upload size for large book archives (50 MB)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
+
 # Configure CORS for Vercel and local development
 CORS(app, origins=[
     "http://localhost:3000",

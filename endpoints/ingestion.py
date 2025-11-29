@@ -265,7 +265,12 @@ def upload_book_data():
     (GraphML, community reports, chunks, etc.) and extracts it to
     the Railway volume for production use.
 
-    Request body (JSON):
+    Supports two upload modes:
+    1. Multipart file upload (preferred for large files):
+        - file: tar.gz archive file
+        - book_name: Name of the book directory (required)
+
+    2. JSON body (legacy, for smaller files):
         - book_name: Name of the book directory (required)
         - archive_data: Base64-encoded tar.gz archive (required)
         - archive_format: Format of archive, e.g., 'tar.gz' (required)
@@ -282,35 +287,68 @@ def upload_book_data():
     import shutil
     from pathlib import Path
 
-    data = request.get_json()
+    book_name = None
+    archive_bytes = None
 
-    if not data:
-        return jsonify({
-            'error': 'missing_body',
-            'message': 'Request body is required'
-        }), 400
+    # Check for multipart file upload (preferred method)
+    if 'file' in request.files:
+        file = request.files['file']
+        book_name = request.form.get('book_name')
 
-    book_name = data.get('book_name')
-    archive_data = data.get('archive_data')
-    archive_format = data.get('archive_format')
+        if not book_name:
+            return jsonify({
+                'error': 'missing_field',
+                'message': 'book_name is required'
+            }), 400
 
-    if not book_name:
-        return jsonify({
-            'error': 'missing_field',
-            'message': 'book_name is required'
-        }), 400
+        if file.filename == '':
+            return jsonify({
+                'error': 'no_file',
+                'message': 'No file selected'
+            }), 400
 
-    if not archive_data:
-        return jsonify({
-            'error': 'missing_field',
-            'message': 'archive_data is required'
-        }), 400
+        # Read file content directly
+        archive_bytes = file.read()
 
-    if archive_format != 'tar.gz':
-        return jsonify({
-            'error': 'unsupported_format',
-            'message': f'Unsupported archive format: {archive_format}. Only tar.gz is supported.'
-        }), 400
+    else:
+        # Fall back to JSON body (legacy method)
+        data = request.get_json(silent=True)
+
+        if not data:
+            return jsonify({
+                'error': 'missing_body',
+                'message': 'Request body is required. Use multipart/form-data with "file" and "book_name", or JSON with archive_data.'
+            }), 400
+
+        book_name = data.get('book_name')
+        archive_data = data.get('archive_data')
+        archive_format = data.get('archive_format')
+
+        if not book_name:
+            return jsonify({
+                'error': 'missing_field',
+                'message': 'book_name is required'
+            }), 400
+
+        if not archive_data:
+            return jsonify({
+                'error': 'missing_field',
+                'message': 'archive_data is required'
+            }), 400
+
+        if archive_format != 'tar.gz':
+            return jsonify({
+                'error': 'unsupported_format',
+                'message': f'Unsupported archive format: {archive_format}. Only tar.gz is supported.'
+            }), 400
+
+        try:
+            archive_bytes = base64.b64decode(archive_data)
+        except base64.binascii.Error as e:
+            return jsonify({
+                'error': 'decode_error',
+                'message': f'Failed to decode archive data: {str(e)}'
+            }), 400
 
     # Get target directory (Railway volume or local)
     volume_path = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', 'book_data')
@@ -320,9 +358,6 @@ def upload_book_data():
     book_target = target_dir / book_name
 
     try:
-        # Decode archive
-        archive_bytes = base64.b64decode(archive_data)
-
         # Write to temp file and extract
         with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as tmp:
             tmp.write(archive_bytes)
@@ -357,11 +392,6 @@ def upload_book_data():
             'files_extracted': file_count
         }), 200
 
-    except base64.binascii.Error as e:
-        return jsonify({
-            'error': 'decode_error',
-            'message': f'Failed to decode archive data: {str(e)}'
-        }), 400
     except tarfile.TarError as e:
         return jsonify({
             'error': 'extract_error',
