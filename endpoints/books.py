@@ -32,7 +32,7 @@ def get_book_data_path(book_id: str) -> str:
         raise FileNotFoundError(f"Book data not found: {book_id}")
 
 def list_available_books() -> list:
-    """List all available book datasets"""
+    """List all available book datasets from filesystem (legacy, used for chunk retrieval)"""
     book_data_dir = Path(get_book_data_base_path())
     if not book_data_dir.exists():
         return []
@@ -44,75 +44,97 @@ def list_available_books() -> list:
 
     return sorted(books)
 
+def list_books_from_neo4j() -> list:
+    """List books from Neo4j BOOK nodes (single source of truth for book list)"""
+    try:
+        from reconciliation_api import get_neo4j_driver
+
+        driver = get_neo4j_driver()
+        if not driver:
+            logger.warning("Neo4j driver not available, falling back to filesystem")
+            return None
+
+        query = """
+        MATCH (b:BOOK)
+        OPTIONAL MATCH (b)-[:CONTAINS_ENTITY]->(e)
+        OPTIONAL MATCH (b)-[:HAS_COMMUNITY]->(c)
+        WITH b, count(DISTINCT e) as entity_count, count(DISTINCT c) as community_count
+        RETURN b.id as id, b.name as name, entity_count, community_count
+        ORDER BY b.name
+        """
+
+        with driver.session() as session:
+            result = session.run(query)
+            books = []
+            for record in result:
+                books.append({
+                    'id': record['id'],
+                    'name': record['name'] or record['id'],
+                    'entity_count': record['entity_count'],
+                    'community_count': record['community_count']
+                })
+            logger.info(f"📚 Loaded {len(books)} books from Neo4j")
+            return books
+    except Exception as e:
+        logger.error(f"Error querying Neo4j for books: {e}")
+        return None
+
 def register_books_endpoints(app):
     """Register book-related endpoints"""
 
     @app.route('/books', methods=['GET'])
     def list_books():
         """
-        Get list of available books in the GraphRAG dataset
+        Get list of available books in the GraphRAG dataset.
+        Uses Neo4j BOOK nodes as the single source of truth.
         """
         try:
-            # Get list of available books from local data
+            # Try Neo4j first (single source of truth)
+            neo4j_books = list_books_from_neo4j()
+
+            if neo4j_books is not None:
+                # Format Neo4j results to match frontend expectations
+                books_info = []
+                for book in neo4j_books:
+                    books_info.append({
+                        'id': book['id'],
+                        'name': book['name'],
+                        'path': None,  # Path not needed for Neo4j-sourced books
+                        'stats': {
+                            'entities': book['entity_count'],
+                            'communities': book['community_count']
+                        }
+                    })
+
+                return jsonify({
+                    'success': True,
+                    'books': books_info,
+                    'count': len(books_info),
+                    'source': 'neo4j'
+                })
+
+            # Fallback to filesystem if Neo4j unavailable
+            logger.warning("Falling back to filesystem for book list")
             available_books = list_available_books()
 
-            # Get detailed info for each book
             books_info = []
             for book_id in available_books:
-                book_path = get_book_data_path(book_id)
-                if book_path:
-                    # Try to get some metadata about the book
-                    try:
-                        import json
-                        from pathlib import Path
-
-                        # Check for full docs to get book info
-                        full_docs_path = Path(book_path) / "kv_store_full_docs.json"
-                        doc_count = 0
-                        if full_docs_path.exists():
-                            with open(full_docs_path, 'r', encoding='utf-8') as f:
-                                docs_data = json.load(f)
-                                if isinstance(docs_data, dict):
-                                    doc_count = len(docs_data)
-                                elif isinstance(docs_data, list):
-                                    doc_count = len(docs_data)
-                                else:
-                                    doc_count = 1
-
-                        # Check for entities
-                        entities_path = Path(book_path) / "vdb_entities.json"
-                        entity_count = 0
-                        if entities_path.exists():
-                            with open(entities_path, 'r', encoding='utf-8') as f:
-                                entities_data = json.load(f)
-                                if 'data' in entities_data:
-                                    entity_count = len(entities_data['data'])
-                                elif 'entities' in entities_data:
-                                    entity_count = len(entities_data['entities'])
-
-                        books_info.append({
-                            'id': book_id,
-                            'name': book_id.replace('_', ' ').title(),
-                            'path': book_path,
-                            'stats': {
-                                'documents': doc_count,
-                                'entities': entity_count
-                            }
-                        })
-
-                    except Exception as e:
-                        logger.warning(f"Could not get metadata for {book_id}: {e}")
-                        books_info.append({
-                            'id': book_id,
-                            'name': book_id.replace('_', ' ').title(),
-                            'path': book_path,
-                            'stats': {}
-                        })
+                try:
+                    book_path = get_book_data_path(book_id)
+                    books_info.append({
+                        'id': book_id,
+                        'name': book_id.replace('_', ' ').title(),
+                        'path': book_path,
+                        'stats': {}
+                    })
+                except Exception as e:
+                    logger.warning(f"Could not get path for {book_id}: {e}")
 
             return jsonify({
                 'success': True,
                 'books': books_info,
-                'count': len(books_info)
+                'count': len(books_info),
+                'source': 'filesystem'
             })
 
         except Exception as e:
