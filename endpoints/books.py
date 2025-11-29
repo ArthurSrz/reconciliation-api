@@ -59,7 +59,7 @@ def list_books_from_neo4j() -> list:
         OPTIONAL MATCH (b)-[:CONTAINS_ENTITY]->(e)
         OPTIONAL MATCH (b)-[:HAS_COMMUNITY]->(c)
         WITH b, count(DISTINCT e) as entity_count, count(DISTINCT c) as community_count
-        RETURN b.id as id, b.name as name, entity_count, community_count
+        RETURN b.id as neo4j_id, b.filesystem_id as filesystem_id, b.name as name, entity_count, community_count
         ORDER BY b.name
         """
 
@@ -67,9 +67,12 @@ def list_books_from_neo4j() -> list:
             result = session.run(query)
             books = []
             for record in result:
+                # Use filesystem_id as the id for GraphRAG compatibility
+                # Fall back to neo4j_id if filesystem_id not set
                 books.append({
-                    'id': record['id'],
-                    'name': record['name'] or record['id'],
+                    'id': record['filesystem_id'] or record['neo4j_id'],
+                    'neo4j_id': record['neo4j_id'],
+                    'name': record['name'] or record['neo4j_id'],
                     'entity_count': record['entity_count'],
                     'community_count': record['community_count']
                 })
@@ -94,10 +97,13 @@ def register_books_endpoints(app):
 
             if neo4j_books is not None:
                 # Format Neo4j results to match frontend expectations
+                # id = filesystem directory name (for GraphRAG chunk retrieval)
+                # neo4j_id = Neo4j node identifier (for graph queries)
                 books_info = []
                 for book in neo4j_books:
                     books_info.append({
-                        'id': book['id'],
+                        'id': book['id'],  # filesystem_id for GraphRAG compatibility
+                        'neo4j_id': book['neo4j_id'],  # Neo4j node id for graph queries
                         'name': book['name'],
                         'path': None,  # Path not needed for Neo4j-sourced books
                         'stats': {
