@@ -2452,7 +2452,10 @@ def find_chunk(chunk_id):
 @app.route('/chunks/<book_id>/<chunk_id>', methods=['GET'])
 def get_chunk_content(book_id, chunk_id):
     """
-    Get the text content of a specific chunk for end-to-end traceability
+    Get the text content of a specific chunk for end-to-end traceability.
+
+    Uses Neo4j as MDM (Master Data Management) index to find which book
+    a chunk belongs to, then fetches content from filesystem.
 
     Args:
         book_id: The ID of the book (e.g., 'a_rebours_huysmans')
@@ -2462,94 +2465,68 @@ def get_chunk_content(book_id, chunk_id):
         JSON with chunk content, metadata, and traceability info
     """
     try:
-        # Try Neo4j first (chunks stored as nodes)
+        found_in_book = None
+        chunk_content = None
+
+        # Step 1: Query Neo4j index to find which book this chunk belongs to
         driver = get_neo4j_driver()
         if driver:
             try:
                 with driver.session() as session:
-                    # Query Chunk node by ID and find its actual book via HAS_CHUNK relationship
+                    # Query Chunk node to get book_filesystem_id (MDM lookup)
                     result = session.run(
                         """
                         MATCH (c:Chunk {id: $chunk_id})
                         OPTIONAL MATCH (b:BOOK)-[:HAS_CHUNK]->(c)
-                        RETURN c.content as content,
-                               c.tokens as tokens,
-                               c.chunk_order_index as chunk_order_index,
-                               c.full_doc_id as full_doc_id,
-                               b.book_dir as actual_book_dir,
-                               b.id as actual_book_id
+                        RETURN c.book_filesystem_id as book_filesystem_id,
+                               b.filesystem_id as book_from_rel
                         """,
                         chunk_id=chunk_id
                     )
 
                     record = result.single()
-                    if record and record['content']:
-                        # Use actual book from relationship, or search files if not found
-                        actual_book = record['actual_book_dir'] or record['actual_book_id']
-                        if actual_book and actual_book.startswith('LIVRE_'):
-                            # Convert LIVRE_Chien Blanc -> chien_blanc_gary by searching files
-                            actual_book = None  # Will fallback to file search below
-
-                        # If no book found in Neo4j, search files to find the right one
-                        found_in_book = actual_book
-                        if not found_in_book:
-                            available_books = list_available_books()
-                            for book_dir in available_books:
-                                try:
-                                    chunks_data = load_chunks_file(book_dir)
-                                    if chunk_id in chunks_data:
-                                        found_in_book = book_dir
-                                        logger.info(f"✅ Found chunk {chunk_id} belongs to {book_dir}")
-                                        break
-                                except FileNotFoundError:
-                                    continue
-
-                        logger.info(f"📚 Retrieved chunk {chunk_id} from Neo4j: {len(record['content'] or '')} chars, found_in: {found_in_book}")
-                        return jsonify({
-                            'success': True,
-                            'book_id': book_id,  # Requested book
-                            'found_in': found_in_book or book_id,  # Actual book where chunk belongs
-                            'chunk_id': chunk_id,
-                            'content': record['content'] or '',
-                            'tokens': record['tokens'] or 0,
-                            'chunk_order_index': record['chunk_order_index'] or 0,
-                            'full_doc_id': record['full_doc_id'] or '',
-                            'source': 'neo4j',
-                            'traceability': {
-                                'pipeline': ['Source Text', 'Text Chunking', 'GraphRAG Entity Extraction', 'Neo4j Storage', '3D Visualization'],
-                                'source_type': 'neo4j_chunk_node',
-                                'processing_chain': 'Book → Chunk → GraphRAG → Neo4j → 3D Graph'
-                            }
-                        })
+                    if record:
+                        # Use book_filesystem_id from chunk or from BOOK relationship
+                        found_in_book = record['book_filesystem_id'] or record['book_from_rel']
+                        if found_in_book:
+                            logger.info(f"📍 Neo4j MDM: chunk {chunk_id} → book {found_in_book}")
             except Exception as neo_error:
-                logger.warning(f"Neo4j chunk lookup failed, trying file fallback: {neo_error}")
+                logger.warning(f"Neo4j MDM lookup failed: {neo_error}")
 
-        # Fallback: Try loading from cached file
-        # First try the specified book_id
-        found_in_book = None
-        chunk_content = None
+        # Step 2: Fetch content from filesystem using the book we found
+        if found_in_book:
+            try:
+                chunks_data = load_chunks_file(found_in_book)
+                if chunk_id in chunks_data:
+                    chunk_content = chunks_data[chunk_id]
+                    logger.info(f"✅ Retrieved chunk {chunk_id} from {found_in_book}")
+            except FileNotFoundError:
+                logger.warning(f"Chunk file not found for book {found_in_book}")
 
-        try:
-            chunks_data = load_chunks_file(book_id)
-            if chunk_id in chunks_data:
-                chunk_content = chunks_data[chunk_id]
-                found_in_book = book_id
-        except FileNotFoundError:
-            pass  # Will try other books
+        # Step 3: Fallback - try the requested book_id if different
+        if chunk_content is None and book_id != found_in_book:
+            try:
+                chunks_data = load_chunks_file(book_id)
+                if chunk_id in chunks_data:
+                    chunk_content = chunks_data[chunk_id]
+                    found_in_book = book_id
+                    logger.info(f"✅ Found chunk {chunk_id} in requested book {book_id}")
+            except FileNotFoundError:
+                pass
 
-        # If not found in specified book, search ALL books (for inter-book entities)
+        # Step 4: Last resort - search all books (slow, for legacy data)
         if chunk_content is None:
-            logger.info(f"🔍 Chunk {chunk_id} not found in {book_id}, searching all books...")
+            logger.info(f"🔍 Chunk {chunk_id} not in Neo4j index, searching all books...")
             available_books = list_available_books()
             for other_book in available_books:
-                if other_book == book_id:
-                    continue  # Already tried this one
+                if other_book in [book_id, found_in_book]:
+                    continue  # Already tried
                 try:
                     chunks_data = load_chunks_file(other_book)
                     if chunk_id in chunks_data:
                         chunk_content = chunks_data[chunk_id]
                         found_in_book = other_book
-                        logger.info(f"✅ Found chunk {chunk_id} in {other_book} (not in requested {book_id})")
+                        logger.info(f"✅ Found chunk {chunk_id} in {other_book} (fallback search)")
                         break
                 except FileNotFoundError:
                     continue
@@ -2558,12 +2535,12 @@ def get_chunk_content(book_id, chunk_id):
         if chunk_content is None:
             return jsonify({
                 'success': False,
-                'error': f'Chunk not found in Neo4j or any book files: {chunk_id}',
+                'error': f'Chunk not found: {chunk_id}',
                 'book_id': book_id,
                 'searched_books': list_available_books()
             }), 404
 
-        # Enhance with traceability metadata
+        # Return chunk with traceability metadata
         result = {
             'success': True,
             'book_id': book_id,  # Original requested book
@@ -2573,11 +2550,12 @@ def get_chunk_content(book_id, chunk_id):
             'tokens': chunk_content.get('tokens', 0),
             'chunk_order_index': chunk_content.get('chunk_order_index', 0),
             'full_doc_id': chunk_content.get('full_doc_id', ''),
-            'source': 'file',
+            'source': 'filesystem',
+            'index_source': 'neo4j_mdm' if found_in_book else 'fallback_search',
             'traceability': {
-                'pipeline': ['Source Text', 'Text Chunking', 'GraphRAG Entity Extraction', 'GraphML Generation', 'Neo4j Import', '3D Visualization'],
-                'source_type': 'original_text',
-                'processing_chain': f'Book → Chunk → GraphRAG → GraphML → Neo4j → 3D Graph'
+                'pipeline': ['Source Text', 'Text Chunking', 'GraphRAG Entity Extraction', 'Neo4j Index', 'Filesystem Storage', '3D Visualization'],
+                'source_type': 'filesystem_chunk',
+                'processing_chain': f'Book → Chunk → Neo4j MDM Index → Filesystem → API'
             }
         }
 
