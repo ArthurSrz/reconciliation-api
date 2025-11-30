@@ -102,7 +102,7 @@ class Neo4jSyncService:
         }
 
         async with self.client.driver.session() as session:
-            # Step 1: Create BOOK node
+            # Step 1: Create BOOK node with filesystem_id for MDM
             print("   Creating BOOK node...")
             await session.run(
                 """
@@ -111,13 +111,15 @@ class Neo4jSyncService:
                     b.author = $author,
                     b.genre = $genre,
                     b.book_dir = $book_dir,
+                    b.filesystem_id = $filesystem_id,
                     b.synced_at = datetime()
                 """,
                 book_id=book_id,
                 title=title,
                 author=author,
                 genre=genre,
-                book_dir=short_book_dir
+                book_dir=short_book_dir,
+                filesystem_id=short_book_dir
             )
 
             # Step 2: Create Entity nodes
@@ -221,33 +223,37 @@ class Neo4jSyncService:
                     except Exception as e:
                         stats['errors'].append(f"Community {comm_id}: {str(e)}")
 
-            # Step 5: Sync text chunks
+            # Step 5: Index text chunks (MDM - no content, just mapping to book)
+            # Content stays in filesystem, Neo4j is the index
             chunks_file = book_path / "kv_store_text_chunks.json"
             if chunks_file.exists():
-                print("   Syncing text chunks...")
+                print("   Indexing text chunks (MDM)...")
                 with open(chunks_file) as f:
                     chunks = json.load(f)
 
-                for chunk_id, chunk_data in chunks.items():
+                # Batch index for performance
+                chunk_ids = list(chunks.keys())
+                batch_size = 500
+                for i in range(0, len(chunk_ids), batch_size):
+                    batch = chunk_ids[i:i + batch_size]
                     try:
-                        chunk_text = chunk_data if isinstance(chunk_data, str) else chunk_data.get('content', '')
-
                         await session.run(
                             """
-                            MERGE (ch:Chunk {id: $chunk_id})
-                            SET ch.content = $content,
-                                ch.source_id = $book_id
+                            UNWIND $chunk_ids as chunk_id
+                            MERGE (ch:Chunk {id: chunk_id})
+                            SET ch.book_filesystem_id = $filesystem_id,
+                                ch.indexed_at = datetime()
+                            REMOVE ch.content
                             WITH ch
-                            MATCH (b:BOOK {id: $book_id})
+                            MATCH (b:BOOK {filesystem_id: $filesystem_id})
                             MERGE (b)-[:HAS_CHUNK]->(ch)
                             """,
-                            chunk_id=chunk_id,
-                            book_id=book_id,
-                            content=chunk_text[:5000]  # Truncate long chunks
+                            chunk_ids=batch,
+                            filesystem_id=short_book_dir
                         )
-                        stats['chunks_synced'] += 1
+                        stats['chunks_synced'] += len(batch)
                     except Exception as e:
-                        stats['errors'].append(f"Chunk {chunk_id}: {str(e)}")
+                        stats['errors'].append(f"Chunk batch {i}: {str(e)}")
 
             # Step 5.5: Create Entity→Chunk relationships based on source_id
             print("   Creating Entity→Chunk relationships...")
