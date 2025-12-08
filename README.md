@@ -6,36 +6,36 @@ Central coordination layer that harmonizes data between Neo4j graph database and
 
 **Base URL**: `https://reconciliation-api-production.up.railway.app`
 
-### Quick Start Examples
+All examples use Marcel Proust's *Du côté de chez Swann* as reference.
 
-#### Get all books
+### 1. List all books
+
 ```bash
 curl https://reconciliation-api-production.up.railway.app/books
 ```
 
-Response:
 ```json
 {
   "success": true,
   "source": "neo4j",
   "books": [
     {
-      "id": "chien_blanc_gary",
-      "name": "Chien blanc",
-      "neo4j_id": "LIVRE_Chien blanc",
-      "entity_count": 1245,
-      "community_count": 156
+      "id": "du_côté_de_chez_swann_marcel_proust",
+      "name": "Du côté de chez Swann",
+      "neo4j_id": "LIVRE_Du côté de chez Swann",
+      "entity_count": 1819,
+      "community_count": 243
     }
   ]
 }
 ```
 
-#### Get graph nodes (most central)
+### 2. Get graph nodes (most central)
+
 ```bash
 curl "https://reconciliation-api-production.up.railway.app/graph/nodes?limit=100"
 ```
 
-Response:
 ```json
 {
   "success": true,
@@ -43,49 +43,181 @@ Response:
   "limit": 100,
   "nodes": [
     {
-      "id": "LIVRE_Chien blanc",
+      "id": "LIVRE_Du côté de chez Swann",
       "labels": ["Entity", "BOOK"],
-      "centrality_score": 7065,
-      "degree": 234,
+      "centrality_score": 5240,
+      "degree": 189,
       "properties": {
-        "title": "Chien blanc",
-        "author": "Romain Gary",
+        "title": "Du côté de chez Swann",
+        "author": "Marcel Proust",
         "entity_type": "BOOK",
-        "filesystem_id": "chien_blanc_gary"
+        "filesystem_id": "du_côté_de_chez_swann_marcel_proust",
+        "genre": "Fiction"
+      }
+    },
+    {
+      "id": "MARCELO PROUST",
+      "labels": ["Entity"],
+      "properties": {
+        "entity_type": "PERSON",
+        "description": "Marcel Proust est un auteur français, né en 1871 à Auteuil, connu pour son œuvre majeure 'À la recherche du temps perdu'."
       }
     }
   ]
 }
 ```
 
-#### Get relationships for specific nodes
+### 3. Get relationships for nodes
+
 ```bash
-curl "https://reconciliation-api-production.up.railway.app/graph/relationships?node_ids=LIVRE_Chien%20blanc,entity_123"
+curl "https://reconciliation-api-production.up.railway.app/graph/relationships?node_ids=MARCELO%20PROUST,AUTEUIL"
 ```
 
-#### Search nodes
-```bash
-curl "https://reconciliation-api-production.up.railway.app/graph/search?q=Gary&type=PERSON&limit=50"
+```json
+{
+  "success": true,
+  "count": 5,
+  "relationships": [
+    {
+      "source": "MARCELO PROUST",
+      "target": "ACHILLE ADRIEN PROUST",
+      "type": "RELATED_TO",
+      "properties": {
+        "description": "Marcel Proust est le fils d'Achille Adrien Proust, qui était un médecin important dans le domaine de l'épidémiologie."
+      }
+    },
+    {
+      "source": "MARCELO PROUST",
+      "target": "À LA RECHERCHE DU TEMPS PERDU",
+      "type": "RELATED_TO",
+      "properties": {
+        "description": "Marcel Proust est l'auteur de 'À la recherche du temps perdu', une œuvre fondatrice de la littérature moderne."
+      }
+    }
+  ]
+}
 ```
 
-#### Get chunk content (for traceability)
+### 4. Search nodes
+
 ```bash
-curl "https://reconciliation-api-production.up.railway.app/chunks/chien_blanc_gary/chunk-abc123"
+curl "https://reconciliation-api-production.up.railway.app/graph/search?q=Swann&limit=10"
 ```
 
-#### Query GraphRAG
+```json
+{
+  "success": true,
+  "count": 1,
+  "query": "Swann",
+  "nodes": [
+    {
+      "id": "LIVRE_Du côté de chez Swann",
+      "labels": ["Entity", "BOOK"],
+      "properties": {
+        "title": "Du côté de chez Swann",
+        "author": "Marcel Proust"
+      }
+    }
+  ]
+}
+```
+
+### 5. Get chunk content (traceability)
+
+Retrieve the original text passage from which entities were extracted:
+
+```bash
+curl "https://reconciliation-api-production.up.railway.app/chunks/du_côté_de_chez_swann_marcel_proust/chunk-e63c089bf9368c76a3ca3ce21d3c88dc"
+```
+
+```json
+{
+  "success": true,
+  "book_id": "du_côté_de_chez_swann_marcel_proust",
+  "chunk_id": "chunk-e63c089bf9368c76a3ca3ce21d3c88dc",
+  "chunk_order_index": 0,
+  "content": "Marcel Proust est né le 10 juillet 1871 à Auteuil...",
+  "tokens": 1200,
+  "full_doc_id": "doc-4a1735a42b2e0323fe261ef10103d395",
+  "source": "filesystem",
+  "index_source": "neo4j_mdm",
+  "traceability": {
+    "source_type": "filesystem_chunk",
+    "pipeline": ["tokenization", "embedding", "entity_extraction"],
+    "processing_chain": "raw_text → chunks → entities → graph"
+  }
+}
+```
+
+### 6. Query GraphRAG
+
 ```bash
 curl -X POST https://reconciliation-api-production.up.railway.app/query \
   -H "Content-Type: application/json" \
-  -d '{"query": "What are the main themes in Romain Gary works?", "book_ids": ["chien_blanc_gary"]}'
+  -d '{
+    "query": "Quelle est la relation entre Marcel Proust et son père?",
+    "book_ids": ["du_côté_de_chez_swann_marcel_proust"]
+  }'
 ```
 
-#### Get graph statistics
+### 7. Query multiple books in parallel
+
+```bash
+curl -X POST https://reconciliation-api-production.up.railway.app/query/multi-book \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Quels sont les thèmes de la mémoire dans ces œuvres?"
+  }'
+```
+
+### 8. Health check
+
+```bash
+curl https://reconciliation-api-production.up.railway.app/health
+```
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2025-12-08T11:02:36Z",
+  "connections": {
+    "neo4j": "connected",
+    "graphrag": "connected"
+  }
+}
+```
+
+### 9. Graph statistics
+
 ```bash
 curl https://reconciliation-api-production.up.railway.app/stats
 ```
 
-Response includes node counts (35,767 total), relationship counts (143,687 total), and breakdowns by type.
+```json
+{
+  "success": true,
+  "nodes": {
+    "total": 35767,
+    "by_type": {
+      "Entity": 26785,
+      "Community": 3761,
+      "Chunk": 2890,
+      "BOOK": 20,
+      "PERSON": 129,
+      "GEO": 300
+    }
+  },
+  "relationships": {
+    "total": 143687,
+    "by_type": {
+      "RELATED_TO": 51961,
+      "EXTRACTED_FROM": 45573,
+      "CONTAINS_ENTITY": 32401,
+      "HAS_COMMUNITY": 3407
+    }
+  }
+}
+```
 
 ---
 
