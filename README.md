@@ -139,16 +139,15 @@ curl "https://reconciliation-api-production.up.railway.app/graph/search?q=Swann&
 Retrieve the original text passage from which entities were extracted:
 
 ```bash
-curl "https://reconciliation-api-production.up.railway.app/chunks/du_côté_de_chez_swann_marcel_proust/chunk-e63c089bf9368c76a3ca3ce21d3c88dc"
+curl "https://reconciliation-api-production.up.railway.app/chunks/du_côté_de_chez_swann_marcel_proust/chunk-7e6f5314d6084a08df6fe52f30b93526"
 ```
 
 ```json
 {
   "success": true,
   "book_id": "du_côté_de_chez_swann_marcel_proust",
-  "chunk_id": "chunk-e63c089bf9368c76a3ca3ce21d3c88dc",
-  "chunk_order_index": 0,
-  "content": "Marcel Proust est né le 10 juillet 1871 à Auteuil...",
+  "chunk_id": "chunk-7e6f5314d6084a08df6fe52f30b93526",
+  "content": "Longtemps, je me suis couché de bonne heure. Parfois, à peine ma bougie éteinte, mes yeux se fermaient si vite que je n'avais pas le temps de me dire: «Je m'endors.» ... il me semblait que j'étais moi-même ce dont parlait l'ouvrage...",
   "tokens": 1200,
   "full_doc_id": "doc-4a1735a42b2e0323fe261ef10103d395",
   "source": "filesystem",
@@ -160,6 +159,8 @@ curl "https://reconciliation-api-production.up.railway.app/chunks/du_côté_de_c
   }
 }
 ```
+
+This chunk contains the famous opening of *Combray* — the narrator's meditation on sleep, dreams, and memory.
 
 ### 6. Query GraphRAG
 
