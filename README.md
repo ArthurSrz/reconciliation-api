@@ -43,24 +43,25 @@ curl "https://reconciliation-api-production.up.railway.app/graph/nodes?limit=100
   "limit": 100,
   "nodes": [
     {
-      "id": "LIVRE_Du côté de chez Swann",
+      "id": "4:d3905797-be64-4806-a783-4a9cdb24a462:2624",
       "labels": ["Entity", "BOOK"],
       "centrality_score": 5240,
       "degree": 189,
       "properties": {
+        "id": "LIVRE_Du côté de chez Swann",
         "title": "Du côté de chez Swann",
         "author": "Marcel Proust",
         "entity_type": "BOOK",
-        "filesystem_id": "du_côté_de_chez_swann_marcel_proust",
-        "genre": "Fiction"
+        "filesystem_id": "du_côté_de_chez_swann_marcel_proust"
       }
     },
     {
-      "id": "MARCELO PROUST",
+      "id": "4:d3905797-be64-4806-a783-4a9cdb24a462:2625",
       "labels": ["Entity"],
       "properties": {
+        "id": "MARCELO PROUST",
         "entity_type": "PERSON",
-        "description": "Marcel Proust est un auteur français, né en 1871 à Auteuil, connu pour son œuvre majeure 'À la recherche du temps perdu'."
+        "description": "Marcel Proust est un auteur français, né en 1871 à Auteuil..."
       }
     }
   ]
@@ -69,34 +70,45 @@ curl "https://reconciliation-api-production.up.railway.app/graph/nodes?limit=100
 
 ### 3. Get relationships for nodes
 
+**Important**: Use the Neo4j element IDs from `/graph/nodes` (format: `4:uuid:number`), not the node's `id` property.
+
 ```bash
-curl "https://reconciliation-api-production.up.railway.app/graph/relationships?node_ids=MARCELO%20PROUST,AUTEUIL"
+# Get relationships between Proust and his parents
+curl "https://reconciliation-api-production.up.railway.app/graph/relationships?node_ids=4:d3905797-be64-4806-a783-4a9cdb24a462:2625,4:d3905797-be64-4806-a783-4a9cdb24a462:2629,4:d3905797-be64-4806-a783-4a9cdb24a462:2630"
 ```
 
 ```json
 {
   "success": true,
-  "count": 5,
+  "count": 4,
+  "input_nodes": 3,
   "relationships": [
     {
-      "source": "MARCELO PROUST",
-      "target": "ACHILLE ADRIEN PROUST",
+      "source": "4:d3905797-be64-4806-a783-4a9cdb24a462:2625",
+      "target": "4:d3905797-be64-4806-a783-4a9cdb24a462:2629",
       "type": "RELATED_TO",
       "properties": {
-        "description": "Marcel Proust est le fils d'Achille Adrien Proust, qui était un médecin important dans le domaine de l'épidémiologie."
+        "description": "Marcel Proust est le fils d'Achille Adrien Proust, qui était un médecin important dans le domaine de l'épidémiologie.",
+        "weight": 10.0
       }
     },
     {
-      "source": "MARCELO PROUST",
-      "target": "À LA RECHERCHE DU TEMPS PERDU",
+      "source": "4:d3905797-be64-4806-a783-4a9cdb24a462:2625",
+      "target": "4:d3905797-be64-4806-a783-4a9cdb24a462:2630",
       "type": "RELATED_TO",
       "properties": {
-        "description": "Marcel Proust est l'auteur de 'À la recherche du temps perdu', une œuvre fondatrice de la littérature moderne."
+        "description": "Marcel Proust est le fils de Jeanne Clémence Weil, qui jouait un rôle important dans son éducation.",
+        "weight": 9.0
       }
     }
   ]
 }
 ```
+
+Node ID mapping for this example:
+- `...2625` = MARCELO PROUST
+- `...2629` = ACHILLE ADRIEN PROUST (father)
+- `...2630` = JEANNE CLÉMENCE WEIL (mother)
 
 ### 4. Search nodes
 
