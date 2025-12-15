@@ -1,0 +1,16 @@
+export $(grep -v '^#' .env | xargs) && \         
+python -m cli.ingest_book \
+          --file /Users/arthursarazin/Documents/nano-graphrag/book_data/raw_books/creativity_flow_and_the_psychology_of_discovery_mihaly_csikszentmihalyi.txt \
+          --title "Creativity, flow and the psychology of discovery"\
+          --author "Mihaly Csikszentmihalyi" \
+          --genre "Psychology"
+
+python -m cli.sync_to_neo4j \
+    --book-dir /Users/arthursarazin/Documents/nano-graphrag/book_data/creativity__flow_and_the_psychology_of_discovery_mihaly_csikszentmihalyi \
+    --title "Creativity, flow and the psychology of discovery" \
+    --author "Mihaly Csikszentmihalyi" \
+    --genre "Psychology"
+
+python -m cli.sync_to_railway \
+      --book-dir /Users/arthursarazin/Documents/nano-graphrag/book_data/creativity__flow_and_the_psychology_of_discovery_mihaly_csikszentmihalyi \
+      --api-url https://reconciliation-api-production.up.railway.app
